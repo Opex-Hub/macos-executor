@@ -1,0 +1,136 @@
+#!/bin/bash
+# Opex Executor – macOS native light‑blue UI (compiled on the fly)
+# Requires Xcode Command Line Tools (clang++ with Cocoa)
+
+set -e
+TMPDIR=$(mktemp -d /tmp/opex_XXXX)
+cd "$TMPDIR"
+
+cat > opex.mm << 'EOF_CODE'
+#import <Cocoa/Cocoa.h>
+
+@interface AppDelegate : NSObject <NSApplicationDelegate, NSTextViewDelegate>
+@property (strong) NSTextView *scriptView;
+@end
+
+@implementation AppDelegate
+
+- (void)buildUI {
+    NSWindow *window = [[NSWindow alloc] initWithContentRect:NSMakeRect(0,0,800,520)
+                                                   styleMask:(NSWindowStyleMaskTitled |
+                                                              NSWindowStyleMaskClosable |
+                                                              NSWindowStyleMaskMiniaturizable)
+                                                     backing:NSBackingStoreBuffered
+                                                       defer:NO];
+    [window setTitle:@"Opex Executor"];
+    [window setBackgroundColor:[NSColor colorWithCalibratedRed:0.68 green:0.85 blue:0.90 alpha:1.0]]; // light blue
+
+    NSView *contentView = [window contentView];
+
+    // Title label
+    NSTextField *titleLabel = [[NSTextField alloc] initWithFrame:NSMakeRect(0,470,800,40)];
+    [titleLabel setStringValue:@"Opex Executor"];
+    [titleLabel setFont:[NSFont boldSystemFontOfSize:24]];
+    [titleLabel setTextColor:[NSColor colorWithCalibratedRed:0.0 green:0.0 blue:0.5 alpha:1.0]];
+    [titleLabel setBackgroundColor:[NSColor clearColor]];
+    [titleLabel setBezeled:NO];
+    [titleLabel setEditable:NO];
+    [titleLabel setAlignment:NSTextAlignmentCenter];
+    [contentView addSubview:titleLabel];
+
+    // Scroll view for script
+    NSScrollView *scrollView = [[NSScrollView alloc] initWithFrame:NSMakeRect(20,60,760,390)];
+    [scrollView setHasVerticalScroller:YES];
+    [scrollView setAutoresizingMask:(NSViewWidthSizable|NSViewHeightSizable)];
+    [scrollView setBorderType:NSBezelBorder];
+
+    NSTextView *textView = [[NSTextView alloc] initWithFrame:NSMakeRect(0,0,760,390)];
+    [textView setFont:[NSFont userFixedPitchFontOfSize:13]];
+    [textView setBackgroundColor:[NSColor colorWithCalibratedRed:0.94 green:0.97 blue:1.0 alpha:1.0]]; // very light blue
+    [textView setTextColor:[NSColor blackColor]];
+    self.scriptView = textView;
+
+    [scrollView setDocumentView:textView];
+    [contentView addSubview:scrollView];
+
+    // Buttons
+    NSButton *injectBtn = [[NSButton alloc] initWithFrame:NSMakeRect(20,15,100,32)];
+    [injectBtn setTitle:@"Inject"];
+    [injectBtn setBezelStyle:NSBezelStyleRounded];
+    [injectBtn setTarget:self];
+    [injectBtn setAction:@selector(injectAction:)];
+    [contentView addSubview:injectBtn];
+
+    NSButton *executeBtn = [[NSButton alloc] initWithFrame:NSMakeRect(140,15,100,32)];
+    [executeBtn setTitle:@"Execute"];
+    [executeBtn setBezelStyle:NSBezelStyleRounded];
+    [executeBtn setTarget:self];
+    [executeBtn setAction:@selector(executeAction:)];
+    [contentView addSubview:executeBtn];
+
+    NSButton *clearBtn = [[NSButton alloc] initWithFrame:NSMakeRect(260,15,100,32)];
+    [clearBtn setTitle:@"Clear"];
+    [clearBtn setBezelStyle:NSBezelStyleRounded];
+    [clearBtn setTarget:self];
+    [clearBtn setAction:@selector(clearAction:)];
+    [contentView addSubview:clearBtn];
+
+    [window makeKeyAndOrderFront:nil];
+}
+
+- (void)injectAction:(id)sender {
+    NSAlert *alert = [[NSAlert alloc] init];
+    [alert setMessageText:@"Inject"];
+    [alert setInformativeText:@"Injecting executor into Roblox...\n(Simulated – no real injection performed.)"];
+    [alert runModal];
+}
+
+- (void)executeAction:(id)sender {
+    NSString *code = [self.scriptView string];
+    if ([code length] == 0) {
+        NSAlert *alert = [[NSAlert alloc] init];
+        [alert setMessageText:@"No Script"];
+        [alert setInformativeText:@"Please enter a script to execute."];
+        [alert runModal];
+        return;
+    }
+    NSAlert *alert = [[NSAlert alloc] init];
+    [alert setMessageText:@"Execute"];
+    [alert setInformativeText:[NSString stringWithFormat:@"Executing script:\n%@", code]];
+    [alert runModal];
+}
+
+- (void)clearAction:(id)sender {
+    [self.scriptView setString:@""];
+}
+
+- (void)applicationDidFinishLaunching:(NSNotification *)aNotification {
+    [self buildUI];
+}
+
+- (BOOL)applicationShouldTerminateAfterLastWindowClosed:(NSApplication *)sender {
+    return YES;
+}
+
+@end
+
+int main() {
+    @autoreleasepool {
+        NSApplication *app = [NSApplication sharedApplication];
+        AppDelegate *delegate = [[AppDelegate alloc] init];
+        [app setDelegate:delegate];
+        [app run];
+    }
+    return 0;
+}
+EOF_CODE
+
+# Compile with clang++ (Cocoa framework)
+clang++ -framework Cocoa -o opex_executor opex.mm
+
+# Run the app
+./opex_executor
+
+# Clean up the temp directory after it exits
+cd /
+rm -rf "$TMPDIR"
