@@ -1,6 +1,7 @@
 #!/bin/bash
-# Opex Executor – macOS native light‑blue UI (compiled on the fly)
+# Opex Executor – macOS solid-blue UI (no photo)
 # Requires Xcode Command Line Tools (clang++ with Cocoa)
+# Provide a valid libopexapi.dylib for real injection/execution.
 
 set -e
 TMPDIR=$(mktemp -d /tmp/opex_XXXX)
@@ -8,7 +9,58 @@ cd "$TMPDIR"
 
 cat > opex.mm << 'EOF_CODE'
 #import <Cocoa/Cocoa.h>
+#import <dlfcn.h>
 
+// -------------------------------------------------------------------
+//  Dynamic library loading for Api.inject() / Api.execute(script)
+// -------------------------------------------------------------------
+typedef void (*InjectFunc)();
+typedef void (*ExecuteFunc)(const char*);
+
+static InjectFunc  pInject  = nullptr;
+static ExecuteFunc pExecute = nullptr;
+static void*       apiHandle = nullptr;
+
+static bool loadApiLibrary() {
+    if (pInject && pExecute) return true;
+    const char* paths[] = {
+        "./libopexapi.dylib",
+        "@executable_path/libopexapi.dylib",
+        "/usr/local/lib/libopexapi.dylib",
+        nullptr
+    };
+    for (const char** path = paths; *path; ++path) {
+        apiHandle = dlopen(*path, RTLD_LAZY);
+        if (apiHandle) break;
+    }
+    if (!apiHandle) return false;
+    pInject  = (InjectFunc) dlsym(apiHandle, "Api_Inject");
+    pExecute = (ExecuteFunc)dlsym(apiHandle, "Api_Execute");
+    if (!pInject || !pExecute) {
+        dlclose(apiHandle);
+        apiHandle = nullptr;
+        return false;
+    }
+    return true;
+}
+
+class Api {
+public:
+    static bool inject() {
+        if (!loadApiLibrary()) return false;
+        pInject();
+        return true;
+    }
+    static bool execute(const char* script) {
+        if (!loadApiLibrary()) return false;
+        pExecute(script);
+        return true;
+    }
+};
+
+// -------------------------------------------------------------------
+//  App Delegate
+// -------------------------------------------------------------------
 @interface AppDelegate : NSObject <NSApplicationDelegate, NSTextViewDelegate>
 @property (strong) NSTextView *scriptView;
 @end
@@ -23,15 +75,16 @@ cat > opex.mm << 'EOF_CODE'
                                                      backing:NSBackingStoreBuffered
                                                        defer:NO];
     [window setTitle:@"Opex Executor"];
-    [window setBackgroundColor:[NSColor colorWithCalibratedRed:0.68 green:0.85 blue:0.90 alpha:1.0]]; // light blue
+    // Solid blue background
+    [window setBackgroundColor:[NSColor blueColor]];
 
     NSView *contentView = [window contentView];
 
-    // Title label
-    NSTextField *titleLabel = [[NSTextField alloc] initWithFrame:NSMakeRect(0,470,800,40)];
+    // Title label (white, centered)
+    NSTextField *titleLabel = [[NSTextField alloc] initWithFrame:NSMakeRect(0, 470, 800, 40)];
     [titleLabel setStringValue:@"Opex Executor"];
     [titleLabel setFont:[NSFont boldSystemFontOfSize:24]];
-    [titleLabel setTextColor:[NSColor colorWithCalibratedRed:0.0 green:0.0 blue:0.5 alpha:1.0]];
+    [titleLabel setTextColor:[NSColor whiteColor]];
     [titleLabel setBackgroundColor:[NSColor clearColor]];
     [titleLabel setBezeled:NO];
     [titleLabel setEditable:NO];
@@ -39,14 +92,14 @@ cat > opex.mm << 'EOF_CODE'
     [contentView addSubview:titleLabel];
 
     // Scroll view for script
-    NSScrollView *scrollView = [[NSScrollView alloc] initWithFrame:NSMakeRect(20,60,760,390)];
+    NSScrollView *scrollView = [[NSScrollView alloc] initWithFrame:NSMakeRect(20, 60, 760, 390)];
     [scrollView setHasVerticalScroller:YES];
     [scrollView setAutoresizingMask:(NSViewWidthSizable|NSViewHeightSizable)];
     [scrollView setBorderType:NSBezelBorder];
 
-    NSTextView *textView = [[NSTextView alloc] initWithFrame:NSMakeRect(0,0,760,390)];
+    NSTextView *textView = [[NSTextView alloc] initWithFrame:NSMakeRect(0, 0, 760, 390)];
     [textView setFont:[NSFont userFixedPitchFontOfSize:13]];
-    [textView setBackgroundColor:[NSColor colorWithCalibratedRed:0.94 green:0.97 blue:1.0 alpha:1.0]]; // very light blue
+    [textView setBackgroundColor:[NSColor colorWithCalibratedRed:0.94 green:0.97 blue:1.0 alpha:1.0]];
     [textView setTextColor:[NSColor blackColor]];
     self.scriptView = textView;
 
@@ -54,21 +107,21 @@ cat > opex.mm << 'EOF_CODE'
     [contentView addSubview:scrollView];
 
     // Buttons
-    NSButton *injectBtn = [[NSButton alloc] initWithFrame:NSMakeRect(20,15,100,32)];
+    NSButton *injectBtn = [[NSButton alloc] initWithFrame:NSMakeRect(20, 15, 100, 32)];
     [injectBtn setTitle:@"Inject"];
     [injectBtn setBezelStyle:NSBezelStyleRounded];
     [injectBtn setTarget:self];
     [injectBtn setAction:@selector(injectAction:)];
     [contentView addSubview:injectBtn];
 
-    NSButton *executeBtn = [[NSButton alloc] initWithFrame:NSMakeRect(140,15,100,32)];
+    NSButton *executeBtn = [[NSButton alloc] initWithFrame:NSMakeRect(140, 15, 100, 32)];
     [executeBtn setTitle:@"Execute"];
     [executeBtn setBezelStyle:NSBezelStyleRounded];
     [executeBtn setTarget:self];
     [executeBtn setAction:@selector(executeAction:)];
     [contentView addSubview:executeBtn];
 
-    NSButton *clearBtn = [[NSButton alloc] initWithFrame:NSMakeRect(260,15,100,32)];
+    NSButton *clearBtn = [[NSButton alloc] initWithFrame:NSMakeRect(260, 15, 100, 32)];
     [clearBtn setTitle:@"Clear"];
     [clearBtn setBezelStyle:NSBezelStyleRounded];
     [clearBtn setTarget:self];
@@ -79,10 +132,18 @@ cat > opex.mm << 'EOF_CODE'
 }
 
 - (void)injectAction:(id)sender {
-    NSAlert *alert = [[NSAlert alloc] init];
-    [alert setMessageText:@"Inject"];
-    [alert setInformativeText:@"Injecting executor into Roblox...\n(Simulated – no real injection performed.)"];
-    [alert runModal];
+    if (Api::inject()) {
+        NSAlert *alert = [[NSAlert alloc] init];
+        [alert setMessageText:@"Injection Successful"];
+        [alert setInformativeText:@"Executor injected into Roblox."];
+        [alert runModal];
+    } else {
+        NSAlert *alert = [[NSAlert alloc] init];
+        [alert setMessageText:@"Injection Failed"];
+        [alert setInformativeText:@"Could not load libopexapi.dylib.\n"
+                               "Place a valid library next to this app and try again."];
+        [alert runModal];
+    }
 }
 
 - (void)executeAction:(id)sender {
@@ -94,10 +155,19 @@ cat > opex.mm << 'EOF_CODE'
         [alert runModal];
         return;
     }
-    NSAlert *alert = [[NSAlert alloc] init];
-    [alert setMessageText:@"Execute"];
-    [alert setInformativeText:[NSString stringWithFormat:@"Executing script:\n%@", code]];
-    [alert runModal];
+    const char* cScript = [code UTF8String];
+    if (Api::execute(cScript)) {
+        NSAlert *alert = [[NSAlert alloc] init];
+        [alert setMessageText:@"Execution Successful"];
+        [alert setInformativeText:[NSString stringWithFormat:@"Executed script:\n%@", code]];
+        [alert runModal];
+    } else {
+        NSAlert *alert = [[NSAlert alloc] init];
+        [alert setMessageText:@"Execution Failed"];
+        [alert setInformativeText:@"Injection library not loaded.\n"
+                               "Make sure libopexapi.dylib is present and you have injected first."];
+        [alert runModal];
+    }
 }
 
 - (void)clearAction:(id)sender {
@@ -110,6 +180,10 @@ cat > opex.mm << 'EOF_CODE'
 
 - (BOOL)applicationShouldTerminateAfterLastWindowClosed:(NSApplication *)sender {
     return YES;
+}
+
+- (void)dealloc {
+    if (apiHandle) dlclose(apiHandle);
 }
 
 @end
@@ -125,12 +199,10 @@ int main() {
 }
 EOF_CODE
 
-# Compile with clang++ (Cocoa framework)
+# Compile and run
 clang++ -framework Cocoa -o opex_executor opex.mm
-
-# Run the app
 ./opex_executor
 
-# Clean up the temp directory after it exits
+# Cleanup after exit
 cd /
 rm -rf "$TMPDIR"
