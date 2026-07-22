@@ -1,12 +1,28 @@
 #!/bin/bash
-# Opex Executor – macOS solid-blue UI (no photo)
-# Requires Xcode Command Line Tools (clang++ with Cocoa)
-# Provide a valid libopexapi.dylib for real injection/execution.
+# Opex Executor – macOS solid-blue UI (fixed)
+# Creates a dummy libopexapi.dylib so the app runs without missing-library errors.
+# Replace the dummy with a real library for actual Roblox injection.
 
 set -e
 TMPDIR=$(mktemp -d /tmp/opex_XXXX)
 cd "$TMPDIR"
 
+# --- Build a dummy injection library (prints to console) ---
+cat > dummy_lib.c << 'EOF_LIB'
+#include <stdio.h>
+
+void Api_Inject(void) {
+    printf("[Dummy] Inject called.\n");
+}
+
+void Api_Execute(const char* script) {
+    printf("[Dummy] Execute script:\n%s\n", script);
+}
+EOF_LIB
+
+clang -dynamiclib -o libopexapi.dylib dummy_lib.c
+
+# --- Build the GUI app ---
 cat > opex.mm << 'EOF_CODE'
 #import <Cocoa/Cocoa.h>
 #import <dlfcn.h>
@@ -61,8 +77,9 @@ public:
 // -------------------------------------------------------------------
 //  App Delegate
 // -------------------------------------------------------------------
-@interface AppDelegate : NSObject <NSApplicationDelegate, NSTextViewDelegate>
+@interface AppDelegate : NSObject <NSApplicationDelegate>
 @property (strong) NSTextView *scriptView;
+@property (weak)   NSWindow   *mainWindow;   // keep a reference for first responder
 @end
 
 @implementation AppDelegate
@@ -75,8 +92,8 @@ public:
                                                      backing:NSBackingStoreBuffered
                                                        defer:NO];
     [window setTitle:@"Opex Executor"];
-    // Solid blue background
-    [window setBackgroundColor:[NSColor blueColor]];
+    [window setBackgroundColor:[NSColor blueColor]];   // solid blue
+    self.mainWindow = window;
 
     NSView *contentView = [window contentView];
 
@@ -101,6 +118,10 @@ public:
     [textView setFont:[NSFont userFixedPitchFontOfSize:13]];
     [textView setBackgroundColor:[NSColor colorWithCalibratedRed:0.94 green:0.97 blue:1.0 alpha:1.0]];
     [textView setTextColor:[NSColor blackColor]];
+    // Make it explicitly editable and selectable (and allow typing)
+    [textView setEditable:YES];
+    [textView setSelectable:YES];
+    [textView setFieldEditor:YES];       // helps with tab / focus behaviour
     self.scriptView = textView;
 
     [scrollView setDocumentView:textView];
@@ -127,6 +148,9 @@ public:
     [clearBtn setTarget:self];
     [clearBtn setAction:@selector(clearAction:)];
     [contentView addSubview:clearBtn];
+
+    // Make the text view the first responder so it accepts key presses immediately
+    [window makeFirstResponder:textView];
 
     [window makeKeyAndOrderFront:nil];
 }
@@ -172,6 +196,8 @@ public:
 
 - (void)clearAction:(id)sender {
     [self.scriptView setString:@""];
+    // Return focus to the text view after clearing
+    [self.mainWindow makeFirstResponder:self.scriptView];
 }
 
 - (void)applicationDidFinishLaunching:(NSNotification *)aNotification {
