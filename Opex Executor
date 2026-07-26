@@ -1,234 +1,190 @@
 #!/bin/bash
-# Opex Executor – macOS solid-blue UI (fixed)
-# Creates a dummy libopexapi.dylib so the app runs without missing-library errors.
-# Replace the dummy with a real library for actual Roblox injection.
-
 set -e
-TMPDIR=$(mktemp -d /tmp/opex_XXXX)
-cd "$TMPDIR"
 
-# --- Build a dummy injection library (prints to console) ---
-cat > dummy_lib.c << 'EOF_LIB'
-#include <stdio.h>
+# ─────────────────────────────────────────────
+#  Opex Hub – One‑script builder & launcher
+#  Creates the full C++ (Qt) project, builds,
+#  and runs the app automatically.
+# ─────────────────────────────────────────────
 
-void Api_Inject(void) {
-    printf("[Dummy] Inject called.\n");
+PROJECT_DIR="OpexExecutor"
+APP_NAME="Opex Executoe"
+
+# Check/install Qt
+if ! command -v qmake &>/dev/null; then
+    echo "Qt not found. Installing with Homebrew..."
+    if ! command -v brew &>/dev/null; then
+        echo "Homebrew required. Install from https://brew.sh"
+        exit 1
+    fi
+    brew install qt
+    echo "Qt installed. Please re-run this script."
+    exit 0
+fi
+
+# Create project directory
+mkdir -p "$PROJECT_DIR"
+cd "$PROJECT_DIR"
+
+# -------------------- OpexHub.pro --------------------
+cat > OpexExecutor.pro << 'PROEOF'
+QT       += core gui widgets
+TARGET    = OpexHub
+TEMPLATE  = app
+SOURCES  += main.cpp \
+            MainWindow.cpp
+HEADERS  += MainWindow.h
+PROEOF
+
+# -------------------- main.cpp --------------------
+cat > main.cpp << 'CPPEOF'
+#include <QApplication>
+#include "MainWindow.h"
+
+int main(int argc, char *argv[]) {
+    QApplication app(argc, argv);
+    MainWindow window;
+    window.setWindowTitle("Opex Hub");
+    window.resize(600, 500);
+    window.show();
+    return app.exec();
 }
+CPPEOF
 
-void Api_Execute(const char* script) {
-    printf("[Dummy] Execute script:\n%s\n", script);
-}
-EOF_LIB
+# -------------------- MainWindow.h --------------------
+cat > MainWindow.h << 'HEADEOF'
+#ifndef MAINWINDOW_H
+#define MAINWINDOW_H
 
-clang -dynamiclib -o libopexapi.dylib dummy_lib.c
+#include <QMainWindow>
+#include <QTextEdit>
+#include <QPushButton>
 
-# --- Build the GUI app ---
-cat > opex.mm << 'EOF_CODE'
-#import <Cocoa/Cocoa.h>
-#import <dlfcn.h>
+class MainWindow : public QMainWindow {
+    Q_OBJECT
 
-// -------------------------------------------------------------------
-//  Dynamic library loading for Api.inject() / Api.execute(script)
-// -------------------------------------------------------------------
-typedef void (*InjectFunc)();
-typedef void (*ExecuteFunc)(const char*);
-
-static InjectFunc  pInject  = nullptr;
-static ExecuteFunc pExecute = nullptr;
-static void*       apiHandle = nullptr;
-
-static bool loadApiLibrary() {
-    if (pInject && pExecute) return true;
-    const char* paths[] = {
-        "./libopexapi.dylib",
-        "@executable_path/libopexapi.dylib",
-        "/usr/local/lib/libopexapi.dylib",
-        nullptr
-    };
-    for (const char** path = paths; *path; ++path) {
-        apiHandle = dlopen(*path, RTLD_LAZY);
-        if (apiHandle) break;
-    }
-    if (!apiHandle) return false;
-    pInject  = (InjectFunc) dlsym(apiHandle, "Api_Inject");
-    pExecute = (ExecuteFunc)dlsym(apiHandle, "Api_Execute");
-    if (!pInject || !pExecute) {
-        dlclose(apiHandle);
-        apiHandle = nullptr;
-        return false;
-    }
-    return true;
-}
-
-class Api {
 public:
-    static bool inject() {
-        if (!loadApiLibrary()) return false;
-        pInject();
-        return true;
-    }
-    static bool execute(const char* script) {
-        if (!loadApiLibrary()) return false;
-        pExecute(script);
-        return true;
-    }
+    explicit MainWindow(QWidget *parent = nullptr);
+
+private slots:
+    void onInject();
+    void onExecute();
+    void onClear();
+
+private:
+    QTextEdit *scriptEditor;
+    QPushButton *btnInject;
+    QPushButton *btnExecute;
+    QPushButton *btnClear;
 };
 
-// -------------------------------------------------------------------
-//  App Delegate
-// -------------------------------------------------------------------
-@interface AppDelegate : NSObject <NSApplicationDelegate>
-@property (strong) NSTextView *scriptView;
-@property (weak)   NSWindow   *mainWindow;   // keep a reference for first responder
-@end
+#endif // MAINWINDOW_H
+HEADEOF
 
-@implementation AppDelegate
+# -------------------- MainWindow.cpp --------------------
+cat > MainWindow.cpp << 'CPPEOF'
+#include "MainWindow.h"
+#include <QVBoxLayout>
+#include <QHBoxLayout>
+#include <QLabel>
+#include <QFont>
+#include <QDebug>
 
-- (void)buildUI {
-    NSWindow *window = [[NSWindow alloc] initWithContentRect:NSMakeRect(0,0,800,520)
-                                                   styleMask:(NSWindowStyleMaskTitled |
-                                                              NSWindowStyleMaskClosable |
-                                                              NSWindowStyleMaskMiniaturizable)
-                                                     backing:NSBackingStoreBuffered
-                                                       defer:NO];
-    [window setTitle:@"Opex Executor"];
-    [window setBackgroundColor:[NSColor blueColor]];   // solid blue
-    self.mainWindow = window;
+MainWindow::MainWindow(QWidget *parent)
+    : QMainWindow(parent)
+{
+    // Central widget and layout
+    QWidget *central = new QWidget(this);
+    setCentralWidget(central);
 
-    NSView *contentView = [window contentView];
+    // Blue background
+    central->setStyleSheet("background-color: #1E90FF;");
 
-    // Title label (white, centered)
-    NSTextField *titleLabel = [[NSTextField alloc] initWithFrame:NSMakeRect(0, 470, 800, 40)];
-    [titleLabel setStringValue:@"Opex Executor"];
-    [titleLabel setFont:[NSFont boldSystemFontOfSize:24]];
-    [titleLabel setTextColor:[NSColor whiteColor]];
-    [titleLabel setBackgroundColor:[NSColor clearColor]];
-    [titleLabel setBezeled:NO];
-    [titleLabel setEditable:NO];
-    [titleLabel setAlignment:NSTextAlignmentCenter];
-    [contentView addSubview:titleLabel];
+    QVBoxLayout *mainLayout = new QVBoxLayout(central);
+    mainLayout->setSpacing(12);
 
-    // Scroll view for script
-    NSScrollView *scrollView = [[NSScrollView alloc] initWithFrame:NSMakeRect(20, 60, 760, 390)];
-    [scrollView setHasVerticalScroller:YES];
-    [scrollView setAutoresizingMask:(NSViewWidthSizable|NSViewHeightSizable)];
-    [scrollView setBorderType:NSBezelBorder];
+    // Title
+    QLabel *title = new QLabel("Opex Hub", this);
+    title->setFont(QFont("Arial", 24, QFont::Bold));
+    title->setStyleSheet("color: white;");
+    title->setAlignment(Qt::AlignCenter);
+    mainLayout->addWidget(title);
 
-    NSTextView *textView = [[NSTextView alloc] initWithFrame:NSMakeRect(0, 0, 760, 390)];
-    [textView setFont:[NSFont userFixedPitchFontOfSize:13]];
-    [textView setBackgroundColor:[NSColor colorWithCalibratedRed:0.94 green:0.97 blue:1.0 alpha:1.0]];
-    [textView setTextColor:[NSColor blackColor]];
-    // Make it explicitly editable and selectable (and allow typing)
-    [textView setEditable:YES];
-    [textView setSelectable:YES];
-    [textView setFieldEditor:YES];       // helps with tab / focus behaviour
-    self.scriptView = textView;
+    // Script editor
+    scriptEditor = new QTextEdit(this);
+    scriptEditor->setPlaceholderText("Paste your Lua script here...");
+    scriptEditor->setFont(QFont("Menlo", 12));
+    scriptEditor->setStyleSheet(
+        "background-color: rgba(0, 0, 0, 180);"
+        "color: white;"
+        "border: 1px solid white;"
+        "border-radius: 8px;"
+        "padding: 8px;"
+    );
+    mainLayout->addWidget(scriptEditor);
 
-    [scrollView setDocumentView:textView];
-    [contentView addSubview:scrollView];
+    // Button row
+    QHBoxLayout *btnLayout = new QHBoxLayout();
+    btnLayout->setSpacing(20);
 
-    // Buttons
-    NSButton *injectBtn = [[NSButton alloc] initWithFrame:NSMakeRect(20, 15, 100, 32)];
-    [injectBtn setTitle:@"Inject"];
-    [injectBtn setBezelStyle:NSBezelStyleRounded];
-    [injectBtn setTarget:self];
-    [injectBtn setAction:@selector(injectAction:)];
-    [contentView addSubview:injectBtn];
+    btnInject = new QPushButton("Inject", this);
+    btnInject->setStyleSheet(
+        "QPushButton { background-color: orange; color: white; font-weight: bold; "
+        "border-radius: 6px; padding: 8px 16px; }"
+        "QPushButton:hover { background-color: darkorange; }"
+    );
+    btnLayout->addWidget(btnInject);
 
-    NSButton *executeBtn = [[NSButton alloc] initWithFrame:NSMakeRect(140, 15, 100, 32)];
-    [executeBtn setTitle:@"Execute"];
-    [executeBtn setBezelStyle:NSBezelStyleRounded];
-    [executeBtn setTarget:self];
-    [executeBtn setAction:@selector(executeAction:)];
-    [contentView addSubview:executeBtn];
+    btnExecute = new QPushButton("Execute", this);
+    btnExecute->setStyleSheet(
+        "QPushButton { background-color: green; color: white; font-weight: bold; "
+        "border-radius: 6px; padding: 8px 16px; }"
+        "QPushButton:hover { background-color: darkgreen; }"
+    );
+    btnLayout->addWidget(btnExecute);
 
-    NSButton *clearBtn = [[NSButton alloc] initWithFrame:NSMakeRect(260, 15, 100, 32)];
-    [clearBtn setTitle:@"Clear"];
-    [clearBtn setBezelStyle:NSBezelStyleRounded];
-    [clearBtn setTarget:self];
-    [clearBtn setAction:@selector(clearAction:)];
-    [contentView addSubview:clearBtn];
+    btnClear = new QPushButton("Clear", this);
+    btnClear->setStyleSheet(
+        "QPushButton { background-color: red; color: white; font-weight: bold; "
+        "border-radius: 6px; padding: 8px 16px; }"
+        "QPushButton:hover { background-color: darkred; }"
+    );
+    btnLayout->addWidget(btnClear);
 
-    // Make the text view the first responder so it accepts key presses immediately
-    [window makeFirstResponder:textView];
+    mainLayout->addLayout(btnLayout);
 
-    [window makeKeyAndOrderFront:nil];
+    // Connect buttons
+    connect(btnInject, &QPushButton::clicked, this, &MainWindow::onInject);
+    connect(btnExecute, &QPushButton::clicked, this, &MainWindow::onExecute);
+    connect(btnClear, &QPushButton::clicked, this, &MainWindow::onClear);
 }
 
-- (void)injectAction:(id)sender {
-    if (Api::inject()) {
-        NSAlert *alert = [[NSAlert alloc] init];
-        [alert setMessageText:@"Injection Successful"];
-        [alert setInformativeText:@"Executor injected into Roblox."];
-        [alert runModal];
-    } else {
-        NSAlert *alert = [[NSAlert alloc] init];
-        [alert setMessageText:@"Injection Failed"];
-        [alert setInformativeText:@"Could not load libopexapi.dylib.\n"
-                               "Place a valid library next to this app and try again."];
-        [alert runModal];
+// ─────────────────────────────────────────────
+//  Stub functions – replace with real injection / execution code
+// ─────────────────────────────────────────────
+void MainWindow::onInject() {
+    qDebug() << "Inject button clicked.";
+    // TODO: attach to Roblox process, load dylib, etc.
+}
+
+void MainWindow::onExecute() {
+    QString code = scriptEditor->toPlainText().trimmed();
+    if (!code.isEmpty()) {
+        qDebug() << "Executing Lua:\n" << code;
+        // TODO: send code to injected module
     }
 }
 
-- (void)executeAction:(id)sender {
-    NSString *code = [self.scriptView string];
-    if ([code length] == 0) {
-        NSAlert *alert = [[NSAlert alloc] init];
-        [alert setMessageText:@"No Script"];
-        [alert setInformativeText:@"Please enter a script to execute."];
-        [alert runModal];
-        return;
-    }
-    const char* cScript = [code UTF8String];
-    if (Api::execute(cScript)) {
-        NSAlert *alert = [[NSAlert alloc] init];
-        [alert setMessageText:@"Execution Successful"];
-        [alert setInformativeText:[NSString stringWithFormat:@"Executed script:\n%@", code]];
-        [alert runModal];
-    } else {
-        NSAlert *alert = [[NSAlert alloc] init];
-        [alert setMessageText:@"Execution Failed"];
-        [alert setInformativeText:@"Injection library not loaded.\n"
-                               "Make sure libopexapi.dylib is present and you have injected first."];
-        [alert runModal];
-    }
+void MainWindow::onClear() {
+    scriptEditor->clear();
 }
+CPPEOF
 
-- (void)clearAction:(id)sender {
-    [self.scriptView setString:@""];
-    // Return focus to the text view after clearing
-    [self.mainWindow makeFirstResponder:self.scriptView];
-}
+# ─── Build ─────────────────────────────────
+echo "Building Opex Hub..."
+qmake OpexHub.pro
+make
 
-- (void)applicationDidFinishLaunching:(NSNotification *)aNotification {
-    [self buildUI];
-}
-
-- (BOOL)applicationShouldTerminateAfterLastWindowClosed:(NSApplication *)sender {
-    return YES;
-}
-
-- (void)dealloc {
-    if (apiHandle) dlclose(apiHandle);
-}
-
-@end
-
-int main() {
-    @autoreleasepool {
-        NSApplication *app = [NSApplication sharedApplication];
-        AppDelegate *delegate = [[AppDelegate alloc] init];
-        [app setDelegate:delegate];
-        [app run];
-    }
-    return 0;
-}
-EOF_CODE
-
-# Compile and run
-clang++ -framework Cocoa -o opex_executor opex.mm
-./opex_executor
-
-# Cleanup after exit
-cd /
-rm -rf "$TMPDIR"
+# ─── Launch ────────────────────────────────
+echo "Launching Opex Hub..."
+open OpexHub.app
