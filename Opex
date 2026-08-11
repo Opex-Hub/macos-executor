@@ -1,0 +1,86 @@
+#!/bin/bash
+
+# Opex Hub - macOS All-in-One Installer & Executor
+# This script runs the terminal sequence in blue, then launches the modern GUI.
+
+# ANSI Color Codes
+BLUE='\033[38;5;39m'
+WHITE='\033[1;37m'
+RESET='\033[0m'
+
+clear
+
+# Terminal Boot Sequence
+echo -e "${BLUE} ██████╗ ██████╗ ███████╗██╗  ██╗    ██╗  ██╗██╗   ██╗██████╗ ${RESET}"
+echo -e "${BLUE}██╔═══██╗██╔══██╗██╔════╝╚██╗██╔╝    ██║  ██║██║   ██║██╔══██╗${RESET}"
+echo -e "${BLUE}██║   ██║██████╔╝█████╗   ╚███╔╝     ███████║██║   ██║██████╔╝${RESET}"
+echo -e "${BLUE}██║   ██║██╔═══╝ ██╔══╝   ██╔██╗     ██╔══██║██║   ██║██╔══██╗${RESET}"
+echo -e "${BLUE}╚██████╔╝██║     ███████╗██╔╝ ██╗    ██║  ██║╚██████╔╝██████╔╝${RESET}"
+echo -e "${BLUE} ╚═════╝ ╚═╝     ╚══════╝╚═╝  ╚═╝    ╚═╝  ╚═╝ ╚═════╝ ╚═════╝ ${RESET}"
+echo -e "${WHITE}                               macOS Edition${RESET}"
+echo ""
+
+# Blue terminal replies before launching
+echo -e "${BLUE}[*] Initializing macOS environment...${RESET}"
+sleep 1
+echo -e "${BLUE}[+] Terminal replies configured to Ronin Blue.${RESET}"
+sleep 0.5
+echo -e "${BLUE}[*] Installing Opex Hub graphical interface...${RESET}"
+sleep 1
+echo -e "${BLUE}[+] Installation complete.${RESET}"
+echo -e "${BLUE}[*] Opening Opex Hub...${RESET}"
+
+# Create the Modern Python GUI on the fly
+cat << 'EOF' > /tmp/OpexHubExecutor.py
+import tkinter as tk
+from tkinter import messagebox
+
+def execute_script():
+    messagebox.showinfo("Opex Hub", "Executing script in Opex Hub...")
+
+def inject_hub():
+    messagebox.showinfo("Opex Hub", "Injecting into process...")
+
+def clear_text():
+    text_box.delete("1.0", tk.END)
+
+# Main Window Setup
+root = tk.Tk()
+root.title("Opex Hub")
+root.geometry("650x440")
+root.configure(bg="#121218") # Deep dark blue-gray background
+root.resizable(False, False)
+
+# Title Label (Vibrant modern blue)
+title_lbl = tk.Label(root, text="Opex Hub", font=("Helvetica", 16, "bold"), bg="#121218", fg="#007AFF")
+title_lbl.pack(pady=10)
+
+# Rich Text Box for script input
+text_box = tk.Text(root, bg="#1a1a24", fg="#dcdce6", insertbackground="white", font=("Menlo", 12), borderwidth=0, highlightthickness=0)
+text_box.pack(padx=15, pady=10, fill=tk.BOTH, expand=True)
+text_box.insert("1.0", "-- Welcome to Opex Hub\n-- Paste your script here...\n")
+
+# Button Frame
+btn_frame = tk.Frame(root, bg="#121218")
+btn_frame.pack(pady=15)
+
+# Execute, Inject, and Clear Buttons
+btn_exec = tk.Button(btn_frame, text="Execute", command=execute_script, width=10, fg="#007AFF", font=("Helvetica", 12, "bold"))
+btn_exec.pack(side=tk.LEFT, padx=10)
+
+btn_inj = tk.Button(btn_frame, text="Inject", command=inject_hub, width=10, font=("Helvetica", 12, "bold"))
+btn_inj.pack(side=tk.LEFT, padx=10)
+
+btn_clear = tk.Button(btn_frame, text="Clear", command=clear_text, width=10, font=("Helvetica", 12))
+btn_clear.pack(side=tk.LEFT, padx=10)
+
+# Run the GUI
+root.mainloop()
+EOF
+
+# Launch the generated GUI using macOS's built-in Python 3
+python3 /tmp/OpexHubExecutor.py
+
+# Clean up the temporary file after the window is closed
+rm /tmp/OpexHubExecutor.py
+echo -e "${BLUE}[*] Opex Hub closed successfully.${RESET}"
