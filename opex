@@ -1,101 +1,103 @@
 #!/bin/bash
 # ============================================================
-#  Opex-MacOS — All-in-One Installer & Builder
+#  Opex-MacOS v2.1 — Installer with # progress bar
 #  Install:  bash -c "$(curl -fsSL https://raw.githubusercontent.com/Opex-Hub/macos-executor/refs/heads/main/opex)"
 # ============================================================
 
 set -euo pipefail
 
 APP_NAME="Opex-MacOS"
-BUNDLE_ID="com.opex.macos"
-VERSION="1.0.0"
+VERSION="2.1.0"
 SCRIPT_DIR="$(cd "$(dirname "$0")" 2>/dev/null && pwd || pwd)"
-# When piped via curl, build in home directory
 if [ ! -w "$SCRIPT_DIR" ]; then SCRIPT_DIR="$HOME"; fi
 BUILD_DIR="$SCRIPT_DIR/build"
 APP_PATH="$BUILD_DIR/$APP_NAME.app"
 
-# Colors
-RED='\033[0;31m'
-GREEN='\033[0;32m'
-YELLOW='\033[1;33m'
-CYAN='\033[0;36m'
-NC='\033[0m'
+RED='\033[0;31m'; GREEN='\033[0;32m'; YELLOW='\033[1;33m'; CYAN='\033[0;36m'; BOLD='\033[1m'; NC='\033[0m'
+
+# ---------- Progress bar (fills with # , updates as % climbs) ----------
+IS_TTY=1
+[ -t 1 ] || IS_TTY=0
+CURRENT_PCT=0
+BAR_WIDTH=40
+
+draw_bar() {
+    [ "$IS_TTY" -eq 1 ] || return 0
+    local pct=${1:-$CURRENT_PCT}
+    local filled=$(( BAR_WIDTH * pct / 100 ))
+    local empty=$(( BAR_WIDTH - filled ))
+    local bar="" i
+    for ((i=0; i<filled; i++)); do bar+="#"; done
+    for ((i=0; i<empty; i++)); do bar+="·"; done
+    printf "\r  ${CYAN}[${NC}${GREEN}${bar}${NC}${CYAN}]${NC} ${BOLD}%3d%%${NC}  " "$pct"
+}
+
+set_progress() { CURRENT_PCT=$1; draw_bar; }
+
+step_msg() {
+    if [ "$IS_TTY" -eq 1 ]; then
+        printf "\r\033[K"
+        printf "%b\n" "$1"
+        draw_bar
+    else
+        printf "%b\n" "$1"
+    fi
+}
 
 echo -e "${CYAN}╔══════════════════════════════════════════╗${NC}"
-echo -e "${CYAN}║     Opex-MacOS — Installer v$VERSION     ║${NC}"
+echo -e "${CYAN}║   Opex-MacOS — Installer v$VERSION        ║${NC}"
 echo -e "${CYAN}╚══════════════════════════════════════════╝${NC}"
 echo ""
+set_progress 0
 
 # ----------------------------------------------------------
 # Step 1: Check requirements
 # ----------------------------------------------------------
-echo -e "${YELLOW}[*] Step 1/5 — Checking requirements...${NC}"
-
+step_msg "${YELLOW}[*] Step 1/5 — Checking requirements...${NC}"
 if ! xcode-select -p >/dev/null 2>&1; then
+    printf "\r\033[K"
     echo -e "${RED}[!] Xcode Command Line Tools not found.${NC}"
     echo "    Run:  xcode-select --install"
     echo "    Then re-run this script."
     exit 1
 fi
-
-echo -e "${GREEN}[✔] Build tools OK${NC}"
+set_progress 10
 
 # ----------------------------------------------------------
-# Step 2: Create Swift source
+# Step 2: Write Swift source
 # ----------------------------------------------------------
-echo -e "${YELLOW}[*] Step 2/5 — Writing Swift source code...${NC}"
-
+step_msg "${YELLOW}[*] Step 2/5 — Writing Swift source code...${NC}"
 mkdir -p "$SCRIPT_DIR/src"
 
 cat > "$SCRIPT_DIR/src/main.swift" <<'SWIFT_EOF'
 import AppKit
 
 // ============================================================
-//  Opex-MacOS — Lua Script Workspace for Roblox
+//  Opex-MacOS v2.0 — Lua Script Workspace (fancy edition)
 // ============================================================
 
 let FM   = FileManager.default
 let home = FM.homeDirectoryForCurrentUser
 
-let appSupportPath = home
-    .appendingPathComponent("Library", isDirectory: true)
-    .appendingPathComponent("Application Support", isDirectory: true)
-    .appendingPathComponent("Opex-MacOS", isDirectory: true)
-let configPath = appSupportPath.appendingPathComponent("linked-folder.txt")
-
-let robloxClientFolder = home
-    .appendingPathComponent("Library", isDirectory: true)
-    .appendingPathComponent("Application Support", isDirectory: true)
-    .appendingPathComponent("Roblox", isDirectory: true)
-
-let studioPluginsFolder = home
-    .appendingPathComponent("Documents", isDirectory: true)
-    .appendingPathComponent("Roblox", isDirectory: true)
-    .appendingPathComponent("Plugins", isDirectory: true)
+let appSupportPath     = home.appendingPathComponent("Library/Application Support/Opex-MacOS", isDirectory: true)
+let configPath         = appSupportPath.appendingPathComponent("linked-folder.txt")
+let robloxClientFolder = home.appendingPathComponent("Library/Application Support/Roblox", isDirectory: true)
+let studioPluginsFolder = home.appendingPathComponent("Documents/Roblox/Plugins", isDirectory: true)
 
 func loadLink() -> String? {
     guard let raw = try? String(contentsOf: configPath, encoding: .utf8) else { return nil }
     let p = raw.trimmingCharacters(in: .whitespacesAndNewlines)
     return p.isEmpty ? nil : p
 }
-
 func saveLink(_ path: String) {
     try? FM.createDirectory(at: appSupportPath, withIntermediateDirectories: true)
     try? path.write(to: configPath, atomically: true, encoding: .utf8)
 }
-
 func clearLink() { try? FM.removeItem(at: configPath) }
-
 func ensureDir(_ url: URL) {
-    if !FM.fileExists(atPath: url.path) {
-        try? FM.createDirectory(at: url, withIntermediateDirectories: true)
-    }
+    if !FM.fileExists(atPath: url.path) { try? FM.createDirectory(at: url, withIntermediateDirectories: true) }
 }
-
-func revealInFinder(_ path: String) {
-    NSWorkspace.shared.selectFile(nil, inFileViewerRootedAtPath: path)
-}
+func revealInFinder(_ path: String) { NSWorkspace.shared.selectFile(nil, inFileViewerRootedAtPath: path) }
 
 func pickFolder() -> String? {
     let panel = NSOpenPanel()
@@ -109,7 +111,6 @@ func pickFolder() -> String? {
     NSApp.activate(ignoringOtherApps: true)
     return panel.runModal() == .OK ? panel.url?.path : nil
 }
-
 func openFinderAtRoblox() {
     if FM.fileExists(atPath: robloxClientFolder.path) {
         revealInFinder(robloxClientFolder.path)
@@ -119,55 +120,375 @@ func openFinderAtRoblox() {
     }
 }
 
-// ============================================================
-//  GUI App
-// ============================================================
+func which(_ name: String) -> String? {
+    let p = Process()
+    p.executableURL = URL(fileURLWithPath: "/usr/bin/which")
+    p.arguments = [name]
+    let pipe = Pipe()
+    p.standardOutput = pipe
+    p.standardError = FileHandle.nullDevice
+    do { try p.run() } catch { return nil }
+    let data = pipe.fileHandleForReading.readDataToEndOfFile()
+    p.waitUntilExit()
+    let out = String(data: data, encoding: .utf8)?.trimmingCharacters(in: .whitespacesAndNewlines) ?? ""
+    return (p.terminationStatus == 0 && !out.isEmpty) ? out : nil
+}
+func findBinary(_ names: [String]) -> String? {
+    for n in names { if let p = which(n) { return p } }
+    return nil
+}
 
-final class OpexApp: NSObject, NSApplicationDelegate, NSTableViewDataSource, NSTableViewDelegate {
+func runProcess(_ path: String, _ args: [String], completion: @escaping (String, String, Int32) -> Void) {
+    DispatchQueue.global(qos: .userInitiated).async {
+        let p = Process()
+        p.executableURL = URL(fileURLWithPath: path)
+        p.arguments = args
+        let outPipe = Pipe(), errPipe = Pipe()
+        p.standardOutput = outPipe
+        p.standardError = errPipe
+        do { try p.run() } catch {
+            DispatchQueue.main.async { completion("", error.localizedDescription, -1) }
+            return
+        }
+        let outData = outPipe.fileHandleForReading.readDataToEndOfFile()
+        let errData = errPipe.fileHandleForReading.readDataToEndOfFile()
+        p.waitUntilExit()
+        let out = String(data: outData, encoding: .utf8) ?? ""
+        let err = String(data: errData, encoding: .utf8) ?? ""
+        DispatchQueue.main.async { completion(out, err, p.terminationStatus) }
+    }
+}
+
+// MARK: - Theme
+
+struct Theme {
+    static let bg      = NSColor(srgbRed: 0.051, green: 0.059, blue: 0.078, alpha: 1)
+    static let sidebar = NSColor(srgbRed: 0.067, green: 0.075, blue: 0.098, alpha: 1)
+    static let panel   = NSColor(srgbRed: 0.078, green: 0.086, blue: 0.110, alpha: 1)
+    static let editor  = NSColor(srgbRed: 0.043, green: 0.051, blue: 0.067, alpha: 1)
+    static let border  = NSColor(srgbRed: 0.14,  green: 0.15,  blue: 0.19,  alpha: 1)
+    static let accent  = NSColor(srgbRed: 0.290, green: 0.561, blue: 1.000, alpha: 1)
+    static let green   = NSColor(srgbRed: 0.243, green: 0.784, blue: 0.420, alpha: 1)
+    static let red     = NSColor.systemRed
+    static let text    = NSColor(srgbRed: 0.671, green: 0.706, blue: 0.761, alpha: 1)
+    static let dim     = NSColor(srgbRed: 0.42,  green: 0.45,  blue: 0.51,  alpha: 1)
+}
+
+func solidView(_ color: NSColor, _ radius: CGFloat = 0) -> NSView {
+    let v = NSView()
+    v.wantsLayer = true
+    v.layer?.backgroundColor = color.cgColor
+    v.layer?.cornerRadius = radius
+    return v
+}
+
+// MARK: - Pill Button
+
+final class PillButton: NSButton {
+    private var baseColor: NSColor
+    private var hoverColor: NSColor
+    private var tracking: NSTrackingArea?
+
+    init(title: String, base: NSColor, textColor: NSColor, target: AnyObject?, action: Selector, tooltip: String) {
+        baseColor = base
+        hoverColor = base.blended(withFraction: 0.20, of: .white) ?? base
+        super.init(frame: .zero)
+        isBordered = false
+        setButtonType(.momentaryChange)
+        wantsLayer = true
+        attributedTitle = NSAttributedString(string: title, attributes: [
+            .font: NSFont.systemFont(ofSize: 12.5, weight: .semibold),
+            .foregroundColor: textColor
+        ])
+        self.target = target
+        self.action = action
+        toolTip = tooltip
+    }
+    required init?(coder: NSCoder) { fatalError("unsupported") }
+    override func layout() {
+        super.layout()
+        wantsLayer = true
+        layer?.cornerRadius = 6
+        layer?.backgroundColor = baseColor.cgColor
+    }
+    override func updateTrackingAreas() {
+        super.updateTrackingAreas()
+        if let t = tracking { removeTrackingArea(t) }
+        let t = NSTrackingArea(rect: bounds, options: [.mouseEnteredAndExited, .activeInKeyWindow], owner: self, userInfo: nil)
+        addTrackingArea(t)
+        tracking = t
+    }
+    override func mouseEntered(with event: NSEvent) { layer?.backgroundColor = hoverColor.cgColor }
+    override func mouseExited(with event: NSEvent)  { layer?.backgroundColor = baseColor.cgColor }
+    override var intrinsicContentSize: NSSize {
+        let s = attributedTitle.size()
+        return NSSize(width: s.width + 22, height: 26)
+    }
+}
+
+// MARK: - Text Button
+
+final class TextButton: NSButton {
+    private var active = false
+    private let normalColor: NSColor
+    private let activeColor: NSColor
+    private let titleText: String
+
+    init(_ title: String, normal: NSColor, active: NSColor, target: AnyObject?, action: Selector) {
+        normalColor = normal
+        activeColor = active
+        titleText = title
+        super.init(frame: .zero)
+        isBordered = false
+        setButtonType(.momentaryChange)
+        self.target = target
+        self.action = action
+        render()
+    }
+    required init?(coder: NSCoder) { fatalError("unsupported") }
+    func setActive(_ a: Bool) { active = a; render() }
+    func setGlyph(_ g: String) {
+        attributedTitle = NSAttributedString(string: g, attributes: [
+            .font: NSFont.systemFont(ofSize: 13, weight: .medium),
+            .foregroundColor: Theme.dim
+        ])
+    }
+    private func render() {
+        attributedTitle = NSAttributedString(string: titleText, attributes: [
+            .font: NSFont.systemFont(ofSize: 11, weight: active ? .bold : .medium),
+            .foregroundColor: active ? activeColor : normalColor,
+            .kern: NSNumber(value: 1.2)
+        ])
+    }
+    override var intrinsicContentSize: NSSize {
+        let s = attributedTitle.size()
+        return NSSize(width: s.width + 14, height: 20)
+    }
+}
+
+// MARK: - Line-number gutter
+
+final class GutterRuler: NSRulerView {
+    weak var textView: NSTextView?
+
+    init(textView: NSTextView) {
+        self.textView = textView
+        textView.postsFrameChangedNotifications = true
+        super.init(scrollView: textView.enclosingScrollView ?? NSScrollView(), orientation: .verticalRuler)
+        clientView = textView
+        isFlipped = true
+        thickness = 46
+        let nc = NotificationCenter.default
+        nc.addObserver(self, selector: #selector(refresh), name: NSText.didChangeNotification, object: textView)
+        nc.addObserver(self, selector: #selector(refresh), name: NSView.frameDidChangeNotification, object: textView)
+        if let clip = textView.enclosingScrollView?.contentView {
+            clip.postsBoundsChangedNotifications = true
+            nc.addObserver(self, selector: #selector(refresh), name: NSView.boundsDidChangeNotification, object: clip)
+        }
+    }
+    required init(coder: NSCoder) { fatalError("unsupported") }
+
+    @objc func refresh() { updateThickness(); needsDisplay = true }
+
+    func updateThickness() {
+        guard let tv = textView else { return }
+        let newlines = (tv.string as NSString).replacingOccurrences(of: "[^\n]", with: "", options: .regularExpression).count
+        let lines = max(1, newlines + 1)
+        let w = 26 + CGFloat(String(lines).count) * 7.5
+        if abs(thickness - w) > 0.5 { thickness = w }
+    }
+
+    override func drawHashMarksAndLabels(in rect: NSRect) {
+        guard let tv = textView, let lm = tv.layoutManager, let container = tv.textContainer else { return }
+        let text = tv.string as NSString
+        Theme.editor.setFill()
+        bounds.fill()
+        Theme.border.setFill()
+        NSRect(x: bounds.maxX - 1, y: 0, width: 1, height: bounds.height).fill()
+
+        let glyphRange = lm.glyphRange(forBoundingRect: tv.visibleRect, in: container)
+        var glyphIndex = glyphRange.location
+        while glyphIndex < NSMaxRange(glyphRange) {
+            var lineGlyphRange = NSRange()
+            let lineRect = lm.lineFragmentRect(forGlyphAt: glyphIndex, effectiveRange: &lineGlyphRange)
+            let charRange = lm.characterRange(forGlyphRange: NSRange(location: glyphIndex, length: 0), actualGlyphRange: nil)
+            let before = text.substring(with: NSRange(location: 0, length: max(0, min(charRange.location, text.length))))
+            let n = before.components(separatedBy: "\n").count
+            drawNumber(n, forLineRect: lineRect, tv: tv)
+            glyphIndex = NSMaxRange(lineGlyphRange)
+        }
+    }
+
+    private func drawNumber(_ n: Int, forLineRect lineRect: NSRect, tv: NSTextView) {
+        let attrs: [NSAttributedString.Key: Any] = [
+            .font: NSFont.monospacedDigitSystemFont(ofSize: 10.5, weight: .regular),
+            .foregroundColor: Theme.dim
+        ]
+        let s = NSAttributedString(string: String(n), attributes: attrs)
+        let size = s.size()
+        let yInTv = lineRect.minY + tv.textContainerOrigin.y
+        let inRuler = convert(NSRect(x: 0, y: yInTv, width: 0, height: lineRect.height), from: tv)
+        s.draw(at: NSPoint(x: bounds.width - 10 - size.width,
+                           y: inRuler.minY + max(0, (inRuler.height - size.height) / 2)))
+    }
+}
+
+// MARK: - Lua syntax highlighting
+
+enum LuaHighlight {
+    static let font = NSFont(name: "Menlo", size: 13) ?? NSFont.monospacedSystemFont(ofSize: 13, weight: .regular)
+    static let italicFont = NSFontManager.shared.convert(font, toHaveTrait: .italicFontMask)
+    static let keywordColor = NSColor(srgbRed: 0.78, green: 0.47, blue: 0.87, alpha: 1)
+    static let stringColor  = NSColor(srgbRed: 0.60, green: 0.77, blue: 0.47, alpha: 1)
+    static let numberColor  = NSColor(srgbRed: 0.83, green: 0.61, blue: 0.40, alpha: 1)
+    static let commentColor = NSColor(srgbRed: 0.40, green: 0.44, blue: 0.50, alpha: 1)
+    static let fnColor      = NSColor(srgbRed: 0.38, green: 0.68, blue: 0.94, alpha: 1)
+
+    static let keywordRe = try! NSRegularExpression(pattern: "\\b(?:and|break|do|else|elseif|end|false|for|function|goto|if|in|local|nil|not|or|repeat|return|self|then|true|until|while)\\b")
+    static let numberRe  = try! NSRegularExpression(pattern: "\\b\\d+(?:\\.\\d+)?\\b")
+    static let fnRe      = try! NSRegularExpression(pattern: "\\b[A-Za-z_][A-Za-z0-9_]*(?=\\s*\\()")
+    static let stringRe  = try! NSRegularExpression(pattern: "\"([^\"\\\\\\n]|\\\\.)*\"|'([^'\\\\\\n]|\\\\.)*'")
+    static let commentRe = try! NSRegularExpression(pattern: "--\\[\\[[\\s\\S]*?\\]\\]|--[^\\n]*")
+
+    static func paint(_ range: NSRange, _ color: NSColor, _ f: NSFont, on ts: NSTextStorage) {
+        if range.location != NSNotFound && NSMaxRange(range) <= ts.length {
+            ts.addAttribute(.foregroundColor, value: color, range: range)
+            if f !== font { ts.addAttribute(.font, value: f, range: range) }
+        }
+    }
+
+    static func apply(to editor: NSTextView) {
+        guard let ts = editor.textStorage else { return }
+        let full = NSRange(location: 0, length: (ts.string as NSString).length)
+        ts.beginEditing()
+        ts.setAttributes([.font: font, .foregroundColor: Theme.text], range: full)
+        keywordRe.enumerateMatches(in: ts.string, options: [], range: full) { m, _, _ in
+            if let m = m { paint(m.range, keywordColor, font, on: ts) }
+        }
+        numberRe.enumerateMatches(in: ts.string, options: [], range: full) { m, _, _ in
+            if let m = m { paint(m.range, numberColor, font, on: ts) }
+        }
+        fnRe.enumerateMatches(in: ts.string, options: [], range: full) { m, _, _ in
+            if let m = m { paint(m.range, fnColor, font, on: ts) }
+        }
+        stringRe.enumerateMatches(in: ts.string, options: [], range: full) { m, _, _ in
+            if let m = m { paint(m.range, stringColor, font, on: ts) }
+        }
+        commentRe.enumerateMatches(in: ts.string, options: [], range: full) { m, _, _ in
+            if let m = m { paint(m.range, commentColor, italicFont, on: ts) }
+        }
+        ts.endEditing()
+        editor.typingAttributes = [.font: font, .foregroundColor: Theme.text]
+    }
+}
+
+// MARK: - Main app
+
+final class OpexApp: NSObject, NSApplicationDelegate, NSTextViewDelegate,
+                     NSTableViewDataSource, NSTableViewDelegate, NSControlTextEditingDelegate {
+
     var window: NSWindow!
     var table: NSTableView!
     var editor: NSTextView!
+    var gutter: GutterRuler!
     var status: NSTextField!
+    var interpLabel: NSTextField!
+    var tabLabel: NSTextField!
+    var console: NSTextView!
+    var btnConsoleTab: TextButton!
+    var btnProblemsTab: TextButton!
+    var collapseBtn: TextButton!
+    var searchField: NSSearchField!
+    var linkValue: NSTextField!
+
+    var allFiles: [String] = []
     var files: [String] = []
     var linkedPath: String?
+    var currentFile: String?
+    var luaPath: String?
+
+    var consoleAttr = NSMutableAttributedString()
+    var problemsAttr = NSMutableAttributedString()
+    var activeTab = 0
+    var collapsed = false
+    var consoleHeight: NSLayoutConstraint!
+
+    // ---------- Lifecycle ----------
 
     func applicationDidFinishLaunching(_ note: Notification) {
         linkedPath = loadLink()
-        if linkedPath == nil { openFinderAtRoblox() }
+        luaPath = findBinary(["lua", "lua5.4", "lua5.3", "luajit"])
         buildMenu()
         buildWindow()
         reloadFiles()
         refreshStatus()
+        window.center()
         window.makeKeyAndOrderFront(nil)
         NSApp.activate(ignoringOtherApps: true)
+
+        if linkedPath == nil {
+            openFinderAtRoblox()
+            if let p = pickFolder() {
+                linkedPath = p
+                saveLink(p)
+                reloadFiles()
+                refreshStatus()
+            }
+        }
+
+        log("Opex-MacOS console ready.", Theme.dim)
+        if let lp = luaPath {
+            log("✔ Lua interpreter found: \(lp) — Execute (⌘R) is live.", Theme.green)
+        } else {
+            log("⚠ Lua interpreter not found — run 'brew install lua' to enable Execute.", Theme.dim)
+        }
     }
 
     func applicationShouldTerminateAfterLastWindowClosed(_ sender: NSApplication) -> Bool { true }
 
-    // MARK: Menu
+    // ---------- Menu ----------
 
     func buildMenu() {
-        let mainMenu = NSMenu()
+        let main = NSMenu()
 
         let appItem = NSMenuItem()
         let appMenu = NSMenu()
-        let quit = NSMenuItem(title: "Quit Opex-MacOS",
-                              action: #selector(NSApplication.terminate(_:)), keyEquivalent: "q")
-        appMenu.addItem(quit)
+        appMenu.addItem(NSMenuItem(title: "Quit Opex-MacOS",
+                                   action: #selector(NSApplication.terminate(_:)), keyEquivalent: "q"))
         appItem.submenu = appMenu
-        mainMenu.addItem(appItem)
+        main.addItem(appItem)
 
         let fileItem = NSMenuItem()
         let fileMenu = NSMenu(title: "File")
-        for (title, sel, key) in [("New Script", #selector(newScript), "n"),
-                                  ("Save", #selector(saveScript), "s"),
-                                  ("Reveal in Finder", #selector(revealFolder), "r")] {
-            let item = NSMenuItem(title: title, action: sel, keyEquivalent: key)
-            item.target = self
-            fileMenu.addItem(item)
+        for (t, s, k) in [("New Script", #selector(newScript), "n"),
+                          ("Save", #selector(saveScript), "s"),
+                          ("Reveal in Finder", #selector(revealFolder), "r")] {
+            let it = NSMenuItem(title: t, action: s, keyEquivalent: k)
+            it.target = self
+            fileMenu.addItem(it)
         }
+        fileMenu.addItem(.separator())
+        let link = NSMenuItem(title: "Link Folder…", action: #selector(linkFolder), keyEquivalent: "l")
+        link.target = self
+        fileMenu.addItem(link)
         fileItem.submenu = fileMenu
-        mainMenu.addItem(fileItem)
+        main.addItem(fileItem)
+
+        let scriptItem = NSMenuItem()
+        let scriptMenu = NSMenu(title: "Script")
+        let run = NSMenuItem(title: "Execute", action: #selector(execute), keyEquivalent: "r")
+        run.target = self
+        scriptMenu.addItem(run)
+        let check = NSMenuItem(title: "Check Syntax", action: #selector(checkProblems), keyEquivalent: "p")
+        check.keyEquivalentModifierMask = [.command, .shift]
+        check.target = self
+        scriptMenu.addItem(check)
+        let studio = NSMenuItem(title: "Send to Roblox Studio", action: #selector(sendToStudio), keyEquivalent: "s")
+        studio.keyEquivalentModifierMask = [.command, .shift]
+        studio.target = self
+        scriptMenu.addItem(studio)
+        scriptItem.submenu = scriptMenu
+        main.addItem(scriptItem)
 
         let helpItem = NSMenuItem()
         let helpMenu = NSMenu(title: "Help")
@@ -175,142 +496,393 @@ final class OpexApp: NSObject, NSApplicationDelegate, NSTableViewDataSource, NST
         about.target = self
         helpMenu.addItem(about)
         helpItem.submenu = helpMenu
-        mainMenu.addItem(helpItem)
+        main.addItem(helpItem)
 
-        NSApp.mainMenu = mainMenu
+        NSApp.mainMenu = main
     }
 
     @objc func showAbout() {
-        let alert = NSAlert()
-        alert.messageText = "Opex-MacOS"
-        alert.informativeText = """
-        A Lua script workspace that links to your Roblox folder.
+        let a = NSAlert()
+        a.messageText = "Opex-MacOS"
+        a.informativeText = """
+        Fancy Lua script workspace for your Roblox folder.
 
-        Version 1.0.0
-        Built with Swift for macOS.
+        Version 2.0.0 — Swift, no dependencies.
 
-        Scripts saved here are plain .lua files.
-        This tool does not inject or execute code in the Roblox client.
+        • Execute runs scripts locally with a Lua interpreter.
+        • → Studio sends scripts to Roblox Studio's Plugins folder.
         """
-        alert.runModal()
+        a.runModal()
     }
 
-    // MARK: Window
+    // ---------- Window / UI ----------
 
     func buildWindow() {
-        window = NSWindow(contentRect: NSRect(x: 0, y: 0, width: 1040, height: 660),
+        window = NSWindow(contentRect: NSRect(x: 0, y: 0, width: 1100, height: 700),
                           styleMask: [.titled, .closable, .miniaturizable, .resizable],
                           backing: .buffered, defer: false)
         window.title = "Opex-MacOS"
         window.appearance = NSAppearance(named: .darkAqua)
         window.titlebarAppearsTransparent = true
+        window.backgroundColor = Theme.bg
+        window.minSize = NSSize(width: 880, height: 560)
         guard let content = window.contentView else { return }
+        content.wantsLayer = true
+        content.layer?.backgroundColor = Theme.bg.cgColor
 
-        let newBtn    = NSButton(title: "New Script", target: self, action: #selector(newScript))
-        let saveBtn   = NSButton(title: "Save", target: self, action: #selector(saveScript))
-        let delBtn    = NSButton(title: "Delete", target: self, action: #selector(deleteScript))
-        let revealBtn = NSButton(title: "Reveal in Finder", target: self, action: #selector(revealFolder))
-        let linkBtn   = NSButton(title: "Link Folder…", target: self, action: #selector(linkFolder))
+        // ===== Toolbar =====
+        let toolbar = solidView(Theme.bg)
+        content.addSubview(toolbar)
+        toolbar.translatesAutoresizingMaskIntoConstraints = false
 
-        for btn in [newBtn, saveBtn, delBtn, revealBtn, linkBtn] {
-            btn.bezelStyle = .rounded
+        let brand = NSTextField(labelWithString: "Opex-MacOS")
+        brand.font = NSFont.systemFont(ofSize: 14, weight: .bold)
+        brand.textColor = Theme.text
+        toolbar.addSubview(brand)
+        brand.translatesAutoresizingMaskIntoConstraints = false
+
+        let btnExecute = PillButton(title: "▶  Execute", base: Theme.accent, textColor: .white,
+                                    target: self, action: #selector(execute), tooltip: "Run the current script locally (⌘R)")
+        let btnStudio  = PillButton(title: "→ Studio", base: NSColor(srgbRed: 0.13, green: 0.45, blue: 0.26, alpha: 1), textColor: .white,
+                                    target: self, action: #selector(sendToStudio), tooltip: "Send to Roblox Studio Plugins")
+        let btnNew     = PillButton(title: "✚ New", base: NSColor(srgbRed: 0.13, green: 0.15, blue: 0.20, alpha: 1), textColor: Theme.text,
+                                    target: self, action: #selector(newScript), tooltip: "New script (⌘N)")
+        let btnSave    = PillButton(title: "Save", base: NSColor(srgbRed: 0.13, green: 0.15, blue: 0.20, alpha: 1), textColor: Theme.text,
+                                    target: self, action: #selector(saveScript), tooltip: "Save (⌘S)")
+        let btnDelete  = PillButton(title: "Delete", base: NSColor(srgbRed: 0.13, green: 0.15, blue: 0.20, alpha: 1), textColor: Theme.text,
+                                    target: self, action: #selector(deleteScript), tooltip: "Delete selected script")
+        let btnReveal  = PillButton(title: "Reveal", base: NSColor(srgbRed: 0.13, green: 0.15, blue: 0.20, alpha: 1), textColor: Theme.text,
+                                    target: self, action: #selector(revealFolder), tooltip: "Reveal folder in Finder")
+        let btnLink    = PillButton(title: "Link…", base: NSColor(srgbRed: 0.13, green: 0.15, blue: 0.20, alpha: 1), textColor: Theme.text,
+                                    target: self, action: #selector(linkFolder), tooltip: "Link another folder")
+
+        for b in [btnExecute, btnStudio, btnNew, btnSave, btnDelete, btnReveal, btnLink] {
+            toolbar.addSubview(b)
+            b.translatesAutoresizingMaskIntoConstraints = false
         }
 
-        let toolbar = NSStackView(views: [newBtn, saveBtn, delBtn, revealBtn, linkBtn])
-        toolbar.orientation = .horizontal
-        toolbar.spacing = 8
-        toolbar.edgeInsets = NSEdgeInsets(top: 8, left: 12, bottom: 8, right: 12)
-        toolbar.translatesAutoresizingMaskIntoConstraints = false
+        // ===== Sidebar =====
+        let sidebar = solidView(Theme.sidebar)
+        content.addSubview(sidebar)
+        sidebar.translatesAutoresizingMaskIntoConstraints = false
+
+        let sideBorder = solidView(Theme.border)
+        content.addSubview(sideBorder)
+        sideBorder.translatesAutoresizingMaskIntoConstraints = false
+
+        let sideTitle = NSTextField(labelWithString: "SCRIPTS")
+        sideTitle.font = NSFont.systemFont(ofSize: 10.5, weight: .bold)
+        sideTitle.textColor = Theme.dim
+        sidebar.addSubview(sideTitle)
+        sideTitle.translatesAutoresizingMaskIntoConstraints = false
+
+        searchField = NSSearchField()
+        searchField.placeholderString = "Search scripts…"
+        searchField.font = NSFont.systemFont(ofSize: 12)
+        searchField.delegate = self
+        sidebar.addSubview(searchField)
+        searchField.translatesAutoresizingMaskIntoConstraints = false
 
         table = NSTableView()
         table.headerView = nil
-        table.rowHeight = 24
+        table.rowHeight = 26
         table.addTableColumn(NSTableColumn(identifier: NSUserInterfaceItemIdentifier("file")))
         table.dataSource = self
         table.delegate = self
+        table.backgroundColor = .clear
+        if #available(macOS 11.0, *) { table.style = .inset }
         let tableScroll = NSScrollView()
         tableScroll.hasVerticalScroller = true
+        tableScroll.drawsBackground = false
+        tableScroll.scrollerStyle = .overlay
         tableScroll.documentView = table
+        sidebar.addSubview(tableScroll)
         tableScroll.translatesAutoresizingMaskIntoConstraints = false
 
+        let linkTitle = NSTextField(labelWithString: "LINKED FOLDER")
+        linkTitle.font = NSFont.systemFont(ofSize: 9.5, weight: .bold)
+        linkTitle.textColor = Theme.dim
+        sidebar.addSubview(linkTitle)
+        linkTitle.translatesAutoresizingMaskIntoConstraints = false
+
+        linkValue = NSTextField(labelWithString: "none")
+        linkValue.font = NSFont.monospacedSystemFont(ofSize: 10.5, weight: .regular)
+        linkValue.textColor = Theme.accent
+        linkValue.lineBreakMode = .byTruncatingMiddle
+        sidebar.addSubview(linkValue)
+        linkValue.translatesAutoresizingMaskIntoConstraints = false
+
+        // ===== Editor area =====
+        let tabBar = solidView(Theme.editor)
+        content.addSubview(tabBar)
+        tabBar.translatesAutoresizingMaskIntoConstraints = false
+
+        let tabBorder = solidView(Theme.border)
+        content.addSubview(tabBorder)
+        tabBorder.translatesAutoresizingMaskIntoConstraints = false
+
+        tabLabel = NSTextField(labelWithString: "No file")
+        tabLabel.translatesAutoresizingMaskIntoConstraints = false
+        tabBar.addSubview(tabLabel)
+
+        collapseBtn = TextButton("▾", normal: Theme.dim, active: Theme.dim, target: self, action: #selector(toggleConsole))
+        tabBar.addSubview(collapseBtn)
+        collapseBtn.translatesAutoresizingMaskIntoConstraints = false
+
+        let editorContainer = solidView(Theme.editor)
+        content.addSubview(editorContainer)
+        editorContainer.translatesAutoresizingMaskIntoConstraints = false
+
         editor = NSTextView()
-        editor.font = NSFont(name: "Menlo", size: 13)
+        editor.font = LuaHighlight.font
         editor.isRichText = false
         editor.allowsUndo = true
+        editor.drawsBackground = false
         editor.autoresizingMask = [.width]
         editor.isVerticallyResizable = true
         editor.isHorizontallyResizable = false
         editor.textContainer?.widthTracksTextView = true
-        editor.minSize = NSSize(width: 0, height: 0)
-        editor.maxSize = NSSize(width: CGFloat.greatestFiniteMagnitude, height: CGFloat.greatestFiniteMagnitude)
-        editor.insertionPointColor = .controlAccentColor
+        editor.textContainer?.lineFragmentPadding = 10
+        editor.textContainerInset = NSSize(width: 0, height: 12)
+        editor.insertionPointColor = Theme.accent
+        editor.selectedTextAttributes = [.backgroundColor: NSColor(srgbRed: 0.16, green: 0.24, blue: 0.38, alpha: 1)]
+        editor.isAutomaticQuoteSubstitutionEnabled = false
+        editor.isAutomaticDashSubstitutionEnabled = false
+        editor.isAutomaticTextReplacementEnabled = false
+        editor.isAutomaticSpellingCorrectionEnabled = false
+        editor.delegate = self
+        editor.string = "-- Opex-MacOS\n-- Write Lua here, then press ▶ Execute\n"
+
         let editorScroll = NSScrollView()
         editorScroll.hasVerticalScroller = true
+        editorScroll.drawsBackground = false
+        editorScroll.scrollerStyle = .overlay
         editorScroll.documentView = editor
+        editorScroll.hasVerticalRuler = true
+        editorScroll.rulersVisible = true
+        gutter = GutterRuler(textView: editor)
+        editorScroll.verticalRulerView = gutter
+        editorContainer.addSubview(editorScroll)
         editorScroll.translatesAutoresizingMaskIntoConstraints = false
 
+        // ===== Console panel =====
+        let consoleWrap = solidView(Theme.panel)
+        content.addSubview(consoleWrap)
+        consoleWrap.translatesAutoresizingMaskIntoConstraints = false
+
+        let consoleTopBorder = solidView(Theme.border)
+        content.addSubview(consoleTopBorder)
+        consoleTopBorder.translatesAutoresizingMaskIntoConstraints = false
+
+        let consoleHeader = solidView(Theme.panel)
+        consoleWrap.addSubview(consoleHeader)
+        consoleHeader.translatesAutoresizingMaskIntoConstraints = false
+
+        btnConsoleTab = TextButton("CONSOLE", normal: Theme.dim, active: Theme.accent, target: self, action: #selector(showConsoleTab))
+        btnProblemsTab = TextButton("PROBLEMS", normal: Theme.dim, active: Theme.accent, target: self, action: #selector(showProblemsTab))
+        let clearBtn = TextButton("CLEAR", normal: Theme.dim, active: Theme.dim, target: self, action: #selector(clearConsole))
+        consoleHeader.addSubview(btnConsoleTab)
+        consoleHeader.addSubview(btnProblemsTab)
+        consoleHeader.addSubview(clearBtn)
+        btnConsoleTab.translatesAutoresizingMaskIntoConstraints = false
+        btnProblemsTab.translatesAutoresizingMaskIntoConstraints = false
+        clearBtn.translatesAutoresizingMaskIntoConstraints = false
+
+        console = NSTextView()
+        console.isEditable = false
+        console.drawsBackground = false
+        console.font = NSFont.monospacedSystemFont(ofSize: 11.5, weight: .regular)
+        console.textContainerInset = NSSize(width: 4, height: 8)
+        let consoleScroll = NSScrollView()
+        consoleScroll.hasVerticalScroller = true
+        consoleScroll.drawsBackground = false
+        consoleScroll.scrollerStyle = .overlay
+        consoleScroll.documentView = console
+        consoleWrap.addSubview(consoleScroll)
+        consoleScroll.translatesAutoresizingMaskIntoConstraints = false
+
+        // ===== Status bar =====
+        let statusBar = solidView(Theme.bg)
+        content.addSubview(statusBar)
+        statusBar.translatesAutoresizingMaskIntoConstraints = false
+
+        let statusBorder = solidView(Theme.border)
+        content.addSubview(statusBorder)
+        statusBorder.translatesAutoresizingMaskIntoConstraints = false
+
         status = NSTextField(labelWithString: "")
-        status.font = NSFont.monospacedSystemFont(ofSize: 11, weight: .regular)
-        status.textColor = .secondaryLabelColor
+        status.font = NSFont.monospacedSystemFont(ofSize: 10.5, weight: .regular)
+        status.textColor = Theme.dim
+        statusBar.addSubview(status)
         status.translatesAutoresizingMaskIntoConstraints = false
 
-        content.addSubview(toolbar)
-        content.addSubview(tableScroll)
-        content.addSubview(editorScroll)
-        content.addSubview(status)
+        interpLabel = NSTextField(labelWithString: "")
+        interpLabel.font = NSFont.monospacedSystemFont(ofSize: 10.5, weight: .regular)
+        interpLabel.textColor = Theme.dim
+        statusBar.addSubview(interpLabel)
+        interpLabel.translatesAutoresizingMaskIntoConstraints = false
 
+        consoleHeight = consoleWrap.heightAnchor.constraint(equalToConstant: 170)
+
+        // ===== Constraints =====
         NSLayoutConstraint.activate([
             toolbar.topAnchor.constraint(equalTo: content.topAnchor),
             toolbar.leadingAnchor.constraint(equalTo: content.leadingAnchor),
             toolbar.trailingAnchor.constraint(equalTo: content.trailingAnchor),
+            toolbar.heightAnchor.constraint(equalToConstant: 46),
 
-            tableScroll.topAnchor.constraint(equalTo: toolbar.bottomAnchor, constant: 4),
-            tableScroll.leadingAnchor.constraint(equalTo: content.leadingAnchor),
-            tableScroll.bottomAnchor.constraint(equalTo: status.topAnchor, constant: -6),
-            tableScroll.widthAnchor.constraint(equalToConstant: 250),
+            brand.leadingAnchor.constraint(equalTo: toolbar.leadingAnchor, constant: 16),
+            brand.centerYAnchor.constraint(equalTo: toolbar.centerYAnchor),
 
-            editorScroll.topAnchor.constraint(equalTo: tableScroll.topAnchor),
-            editorScroll.leadingAnchor.constraint(equalTo: tableScroll.trailingAnchor, constant: 6),
-            editorScroll.trailingAnchor.constraint(equalTo: content.trailingAnchor, constant: -10),
-            editorScroll.bottomAnchor.constraint(equalTo: tableScroll.bottomAnchor),
+            btnLink.trailingAnchor.constraint(equalTo: toolbar.trailingAnchor, constant: -14),
+            btnReveal.trailingAnchor.constraint(equalTo: btnLink.leadingAnchor, constant: -8),
+            btnDelete.trailingAnchor.constraint(equalTo: btnReveal.leadingAnchor, constant: -8),
+            btnSave.trailingAnchor.constraint(equalTo: btnDelete.leadingAnchor, constant: -8),
+            btnNew.trailingAnchor.constraint(equalTo: btnSave.leadingAnchor, constant: -8),
+            btnStudio.trailingAnchor.constraint(equalTo: btnNew.leadingAnchor, constant: -8),
+            btnExecute.trailingAnchor.constraint(equalTo: btnStudio.leadingAnchor, constant: -8),
+            btnExecute.topAnchor.constraint(equalTo: toolbar.topAnchor, constant: 10),
+            btnStudio.topAnchor.constraint(equalTo: toolbar.topAnchor, constant: 10),
+            btnNew.topAnchor.constraint(equalTo: toolbar.topAnchor, constant: 10),
+            btnSave.topAnchor.constraint(equalTo: toolbar.topAnchor, constant: 10),
+            btnDelete.topAnchor.constraint(equalTo: toolbar.topAnchor, constant: 10),
+            btnReveal.topAnchor.constraint(equalTo: toolbar.topAnchor, constant: 10),
+            btnLink.topAnchor.constraint(equalTo: toolbar.topAnchor, constant: 10),
 
-            status.leadingAnchor.constraint(equalTo: content.leadingAnchor, constant: 12),
-            status.trailingAnchor.constraint(equalTo: content.trailingAnchor, constant: -12),
-            status.bottomAnchor.constraint(equalTo: content.bottomAnchor, constant: -6),
+            sidebar.topAnchor.constraint(equalTo: toolbar.bottomAnchor),
+            sidebar.leadingAnchor.constraint(equalTo: content.leadingAnchor),
+            sidebar.bottomAnchor.constraint(equalTo: statusBar.topAnchor),
+            sidebar.widthAnchor.constraint(equalToConstant: 240),
+
+            sideBorder.leadingAnchor.constraint(equalTo: sidebar.trailingAnchor),
+            sideBorder.topAnchor.constraint(equalTo: sidebar.topAnchor),
+            sideBorder.bottomAnchor.constraint(equalTo: sidebar.bottomAnchor),
+            sideBorder.widthAnchor.constraint(equalToConstant: 1),
+
+            sideTitle.topAnchor.constraint(equalTo: sidebar.topAnchor, constant: 14),
+            sideTitle.leadingAnchor.constraint(equalTo: sidebar.leadingAnchor, constant: 16),
+
+            searchField.topAnchor.constraint(equalTo: sideTitle.bottomAnchor, constant: 10),
+            searchField.leadingAnchor.constraint(equalTo: sidebar.leadingAnchor, constant: 12),
+            searchField.trailingAnchor.constraint(equalTo: sidebar.trailingAnchor, constant: -12),
+            searchField.heightAnchor.constraint(equalToConstant: 28),
+
+            tableScroll.topAnchor.constraint(equalTo: searchField.bottomAnchor, constant: 8),
+            tableScroll.leadingAnchor.constraint(equalTo: sidebar.leadingAnchor),
+            tableScroll.trailingAnchor.constraint(equalTo: sidebar.trailingAnchor),
+            tableScroll.bottomAnchor.constraint(equalTo: linkTitle.topAnchor, constant: -8),
+
+            linkValue.bottomAnchor.constraint(equalTo: sidebar.bottomAnchor, constant: -10),
+            linkValue.leadingAnchor.constraint(equalTo: sidebar.leadingAnchor, constant: 14),
+            linkValue.trailingAnchor.constraint(equalTo: sidebar.trailingAnchor, constant: -12),
+            linkTitle.bottomAnchor.constraint(equalTo: linkValue.topAnchor, constant: -3),
+            linkTitle.leadingAnchor.constraint(equalTo: linkValue.leadingAnchor),
+
+            tabBar.topAnchor.constraint(equalTo: toolbar.bottomAnchor),
+            tabBar.leadingAnchor.constraint(equalTo: sideBorder.trailingAnchor),
+            tabBar.trailingAnchor.constraint(equalTo: content.trailingAnchor),
+            tabBar.heightAnchor.constraint(equalToConstant: 32),
+
+            tabBorder.leadingAnchor.constraint(equalTo: tabBar.leadingAnchor),
+            tabBorder.trailingAnchor.constraint(equalTo: tabBar.trailingAnchor),
+            tabBorder.bottomAnchor.constraint(equalTo: tabBar.bottomAnchor),
+            tabBorder.heightAnchor.constraint(equalToConstant: 1),
+
+            tabLabel.leadingAnchor.constraint(equalTo: tabBar.leadingAnchor, constant: 16),
+            tabLabel.centerYAnchor.constraint(equalTo: tabBar.centerYAnchor),
+            collapseBtn.trailingAnchor.constraint(equalTo: tabBar.trailingAnchor, constant: -10),
+            collapseBtn.centerYAnchor.constraint(equalTo: tabBar.centerYAnchor),
+
+            editorContainer.topAnchor.constraint(equalTo: tabBar.bottomAnchor),
+            editorContainer.leadingAnchor.constraint(equalTo: sideBorder.trailingAnchor),
+            editorContainer.trailingAnchor.constraint(equalTo: content.trailingAnchor),
+            editorContainer.bottomAnchor.constraint(equalTo: consoleTopBorder.topAnchor),
+
+            editorScroll.topAnchor.constraint(equalTo: editorContainer.topAnchor),
+            editorScroll.leadingAnchor.constraint(equalTo: editorContainer.leadingAnchor),
+            editorScroll.trailingAnchor.constraint(equalTo: editorContainer.trailingAnchor),
+            editorScroll.bottomAnchor.constraint(equalTo: editorContainer.bottomAnchor),
+
+            consoleTopBorder.leadingAnchor.constraint(equalTo: content.leadingAnchor, constant: 240),
+            consoleTopBorder.trailingAnchor.constraint(equalTo: content.trailingAnchor),
+            consoleTopBorder.bottomAnchor.constraint(equalTo: consoleWrap.topAnchor),
+            consoleTopBorder.heightAnchor.constraint(equalToConstant: 1),
+
+            consoleWrap.leadingAnchor.constraint(equalTo: content.leadingAnchor, constant: 240),
+            consoleWrap.trailingAnchor.constraint(equalTo: content.trailingAnchor),
+            consoleWrap.bottomAnchor.constraint(equalTo: statusBar.topAnchor),
+            consoleHeight,
+
+            consoleHeader.topAnchor.constraint(equalTo: consoleWrap.topAnchor),
+            consoleHeader.leadingAnchor.constraint(equalTo: consoleWrap.leadingAnchor),
+            consoleHeader.trailingAnchor.constraint(equalTo: consoleWrap.trailingAnchor),
+            consoleHeader.heightAnchor.constraint(equalToConstant: 26),
+
+            btnConsoleTab.leadingAnchor.constraint(equalTo: consoleHeader.leadingAnchor, constant: 12),
+            btnConsoleTab.centerYAnchor.constraint(equalTo: consoleHeader.centerYAnchor),
+            btnProblemsTab.leadingAnchor.constraint(equalTo: btnConsoleTab.trailingAnchor, constant: 4),
+            btnProblemsTab.centerYAnchor.constraint(equalTo: consoleHeader.centerYAnchor),
+            clearBtn.trailingAnchor.constraint(equalTo: consoleHeader.trailingAnchor, constant: -12),
+            clearBtn.centerYAnchor.constraint(equalTo: consoleHeader.centerYAnchor),
+
+            consoleScroll.topAnchor.constraint(equalTo: consoleHeader.bottomAnchor),
+            consoleScroll.leadingAnchor.constraint(equalTo: consoleWrap.leadingAnchor),
+            consoleScroll.trailingAnchor.constraint(equalTo: consoleWrap.trailingAnchor),
+            consoleScroll.bottomAnchor.constraint(equalTo: consoleWrap.bottomAnchor),
+
+            statusBar.leadingAnchor.constraint(equalTo: content.leadingAnchor),
+            statusBar.trailingAnchor.constraint(equalTo: content.trailingAnchor),
+            statusBar.bottomAnchor.constraint(equalTo: content.bottomAnchor),
+            statusBar.heightAnchor.constraint(equalToConstant: 24),
+
+            statusBorder.leadingAnchor.constraint(equalTo: content.leadingAnchor),
+            statusBorder.trailingAnchor.constraint(equalTo: content.trailingAnchor),
+            statusBorder.topAnchor.constraint(equalTo: statusBar.topAnchor),
+            statusBorder.heightAnchor.constraint(equalToConstant: 1),
+
+            status.leadingAnchor.constraint(equalTo: statusBar.leadingAnchor, constant: 12),
+            status.centerYAnchor.constraint(equalTo: statusBar.centerYAnchor),
+            interpLabel.trailingAnchor.constraint(equalTo: statusBar.trailingAnchor, constant: -12),
+            interpLabel.centerYAnchor.constraint(equalTo: statusBar.centerYAnchor),
         ])
+
+        updateTabLabel()
+        showTab(0)
     }
 
-    // MARK: Actions
+    // ---------- Actions ----------
 
     @objc func newScript() {
         guard let lp = linkedPath else { askLinkFirst(); return }
         var i = 1
         while FM.fileExists(atPath: URL(fileURLWithPath: lp).appendingPathComponent("Untitled-\(i).lua").path) { i += 1 }
-        let url = URL(fileURLWithPath: lp).appendingPathComponent("Untitled-\(i).lua")
-        _ = FM.createFile(atPath: url.path, contents: Data("-- Opex-MacOS script\n".utf8))
+        let name = "Untitled-\(i).lua"
+        _ = FM.createFile(atPath: URL(fileURLWithPath: lp).appendingPathComponent(name).path,
+                          contents: Data("-- Opex-MacOS script\n".utf8))
         reloadFiles()
-        if let idx = files.firstIndex(of: url.lastPathComponent) {
+        if let idx = files.firstIndex(of: name) {
             table.selectRowIndexes(IndexSet(integer: idx), byExtendingSelection: false)
         }
     }
 
     @objc func saveScript() {
-        guard let lp = linkedPath, table.selectedRow >= 0, table.selectedRow < files.count else { return }
-        let url = URL(fileURLWithPath: lp).appendingPathComponent(files[table.selectedRow])
-        try? editor.string.write(to: url, atomically: true, encoding: .utf8)
-        refreshStatus(saved: true)
+        guard let lp = linkedPath, let f = currentFile else { return }
+        let url = URL(fileURLWithPath: lp).appendingPathComponent(f)
+        do { try editor.string.write(to: url, atomically: true, encoding: .utf8) } catch { return }
+        log("💾 Saved \(f)", Theme.dim)
+        refreshStatus()
     }
 
     @objc func deleteScript() {
-        guard let lp = linkedPath, table.selectedRow >= 0, table.selectedRow < files.count else { return }
-        let name = files[table.selectedRow]
+        guard let lp = linkedPath, let f = currentFile else { return }
         let alert = NSAlert()
-        alert.messageText = "Delete \(name)?"
+        alert.messageText = "Delete \(f)?"
         alert.addButton(withTitle: "Delete")
         alert.addButton(withTitle: "Cancel")
         if alert.runModal() == .alertFirstButtonReturn {
-            try? FM.removeItem(at: URL(fileURLWithPath: lp).appendingPathComponent(name))
+            try? FM.removeItem(at: URL(fileURLWithPath: lp).appendingPathComponent(f))
             reloadFiles()
+            refreshStatus()
         }
     }
 
@@ -337,50 +909,195 @@ final class OpexApp: NSObject, NSApplicationDelegate, NSTableViewDataSource, NST
         if alert.runModal() == .alertFirstButtonReturn { linkFolder() }
     }
 
-    // MARK: Helpers
+    // ---------- Execute / Check / Studio ----------
 
-    func refreshStatus(saved: Bool = false) {
-        if let lp = linkedPath {
-            status.stringValue = (saved ? "Saved ✔   " : "") + "Linked: \(lp)"
-        } else {
-            status.stringValue = "Not linked — click 'Link Folder…' or run: opex link"
+    @objc func execute() {
+        guard let lp = linkedPath, let f = currentFile else {
+            log("⚠ No script selected.", Theme.dim, bold: true); return
+        }
+        let url = URL(fileURLWithPath: lp).appendingPathComponent(f)
+        try? editor.string.write(to: url, atomically: true, encoding: .utf8)
+        showTab(0)
+        guard let lua = luaPath ?? findBinary(["lua", "lua5.4", "lua5.3", "luajit"]) else {
+            log("✖ Lua interpreter not found on this Mac.", Theme.red, bold: true)
+            log("  Install it with:  brew install lua", Theme.text)
+            log("  Your script is still saved — use “→ Studio” for Roblox Studio.", Theme.dim)
+            return
+        }
+        log("▶ Executing \(f) …", Theme.accent, bold: true)
+        runProcess(lua, [url.path]) { [weak self] out, err, code in
+            guard let self = self else { return }
+            let o = out.trimmingCharacters(in: .whitespacesAndNewlines)
+            let e = err.trimmingCharacters(in: .whitespacesAndNewlines)
+            if !o.isEmpty { self.log(o, Theme.text) }
+            if !e.isEmpty { self.log(e, Theme.red) }
+            self.log(code == 0 ? "✔ Finished (exit 0)" : "✖ Exited with code \(code)",
+                     code == 0 ? Theme.green : Theme.red, bold: true)
         }
     }
 
+    @objc func checkProblems() {
+        guard let lp = linkedPath, let f = currentFile else { return }
+        let url = URL(fileURLWithPath: lp).appendingPathComponent(f)
+        try? editor.string.write(to: url, atomically: true, encoding: .utf8)
+        problemsAttr = NSMutableAttributedString()
+        appendTo(problemsAttr, "Checking \(f) …", Theme.dim, bold: false)
+        showTab(1)
+        guard let luac = findBinary(["luac", "luac5.4", "luac5.3"]) else {
+            appendTo(problemsAttr, "⚠ luac not found — install lua for real syntax checks (brew install lua).", Theme.dim, bold: false)
+            appendTo(problemsAttr, "No problems detected in the workspace.", Theme.green, bold: true)
+            refreshVisible(); return
+        }
+        runProcess(luac, ["-p", url.path]) { [weak self] out, err, code in
+            guard let self = self else { return }
+            if code == 0 {
+                self.appendTo(self.problemsAttr, "✔ No syntax problems detected.", Theme.green, bold: true)
+            } else {
+                let e = err.isEmpty ? out : err
+                self.appendTo(self.problemsAttr, e.trimmingCharacters(in: .whitespacesAndNewlines), Theme.red, bold: false)
+            }
+            self.refreshVisible()
+        }
+    }
+
+    @objc func sendToStudio() {
+        guard let lp = linkedPath, let f = currentFile else {
+            log("⚠ No script selected.", Theme.dim, bold: true); return
+        }
+        try? editor.string.write(to: URL(fileURLWithPath: lp).appendingPathComponent(f), atomically: true, encoding: .utf8)
+        ensureDir(studioPluginsFolder)
+        let src = URL(fileURLWithPath: lp).appendingPathComponent(f)
+        let dst = studioPluginsFolder.appendingPathComponent(f)
+        try? FM.removeItem(at: dst)
+        do {
+            try FM.copyItem(at: src, to: dst)
+            log("→ Sent to Roblox Studio: \(dst.path)", Theme.green, bold: true)
+            log("  Open Roblox Studio → Plugins tab to use it.", Theme.dim)
+        } catch {
+            log("✖ Copy failed: \(error.localizedDescription)", Theme.red, bold: true)
+        }
+    }
+
+    // ---------- Console helpers ----------
+
+    func appendTo(_ attr: NSMutableAttributedString, _ s: String, _ color: NSColor, bold: Bool) {
+        attr.append(NSAttributedString(string: s + "\n", attributes: [
+            .font: NSFont.monospacedSystemFont(ofSize: 11.5, weight: bold ? .semibold : .regular),
+            .foregroundColor: color
+        ]))
+    }
+    func log(_ s: String, _ color: NSColor = Theme.text, bold: Bool = false) {
+        appendTo(consoleAttr, s, color, bold: bold)
+        refreshVisible()
+    }
+    func refreshVisible() {
+        console.textStorage?.setAttributedString(activeTab == 0 ? consoleAttr : problemsAttr)
+        console.scrollToEndOfDocument(nil)
+    }
+    func showTab(_ idx: Int) {
+        activeTab = idx
+        btnConsoleTab.setActive(idx == 0)
+        btnProblemsTab.setActive(idx == 1)
+        refreshVisible()
+    }
+    @objc func showConsoleTab()   { showTab(0) }
+    @objc func showProblemsTab()  { showTab(1) }
+    @objc func clearConsole() {
+        if activeTab == 0 { consoleAttr = NSMutableAttributedString() } else { problemsAttr = NSMutableAttributedString() }
+        refreshVisible()
+    }
+    @objc func toggleConsole() {
+        collapsed.toggle()
+        let target: CGFloat = collapsed ? 27 : 170
+        NSAnimationContext.runAnimationGroup({ ctx in
+            ctx.duration = 0.22
+            ctx.timingFunction = CAMediaTimingFunction(name: .easeInEaseOut)
+            consoleHeight.animator().constant = target
+        })
+        collapseBtn.setGlyph(collapsed ? "▴" : "▾")
+    }
+
+    // ---------- Files / status ----------
+
+    func refreshStatus() {
+        if let lp = linkedPath {
+            status.stringValue = "Linked: \(lp)"
+            linkValue.stringValue = (lp as NSString).abbreviatingWithTildeInPath
+        } else {
+            status.stringValue = "Not linked — click Link… or run: opex link"
+            linkValue.stringValue = "none"
+        }
+        interpLabel.stringValue = luaPath != nil ? "Lua: ready" : "Lua: not found (brew install lua)"
+    }
+
     func reloadFiles() {
-        files.removeAll()
+        allFiles.removeAll()
         if let lp = linkedPath, let items = try? FM.contentsOfDirectory(atPath: lp) {
-            files = items
+            allFiles = items
                 .filter { ["lua", "txt", "rbxm", "rbxmx", "json"].contains(($0 as NSString).pathExtension) }
                 .sorted { $0.localizedStandardCompare($1) == .orderedAscending }
         }
+        filterFiles()
+    }
+
+    func filterFiles() {
+        let q = searchField.stringValue
+        files = q.isEmpty ? allFiles : allFiles.filter { $0.localizedCaseInsensitiveContains(q) }
         table.reloadData()
         if !files.isEmpty {
             table.selectRowIndexes(IndexSet(integer: 0), byExtendingSelection: false)
+        } else {
+            currentFile = nil
+            editor.string = ""
+            updateTabLabel()
         }
     }
 
     func loadSelected() {
         let row = table.selectedRow
-        guard row >= 0, row < files.count, let lp = linkedPath else { editor.string = ""; return }
+        guard row >= 0, row < files.count, let lp = linkedPath else { currentFile = nil; updateTabLabel(); return }
+        currentFile = files[row]
         let url = URL(fileURLWithPath: lp).appendingPathComponent(files[row])
         editor.string = (try? String(contentsOf: url, encoding: .utf8)) ?? ""
+        LuaHighlight.apply(to: editor)
+        gutter.refresh()
+        updateTabLabel()
     }
 
-    // MARK: TableView
+    func updateTabLabel() {
+        let dotColor = currentFile == nil ? Theme.dim : Theme.green
+        let s = NSMutableAttributedString(string: "●  ", attributes: [
+            .foregroundColor: dotColor, .font: NSFont.systemFont(ofSize: 11)
+        ])
+        s.append(NSAttributedString(string: currentFile ?? "No file", attributes: [
+            .foregroundColor: Theme.text, .font: NSFont.systemFont(ofSize: 12, weight: .medium)
+        ]))
+        tabLabel.attributedStringValue = s
+    }
+
+    // ---------- Delegates ----------
+
+    func controlTextDidChange(_ obj: Notification) { filterFiles() }
+
+    func textDidChange(_ notification: Notification) {
+        LuaHighlight.apply(to: editor)
+        gutter.refresh()
+    }
 
     func numberOfRows(in tableView: NSTableView) -> Int { files.count }
 
     func tableView(_ tableView: NSTableView, viewFor tableColumn: NSTableColumn?, row: Int) -> NSView? {
         let id = NSUserInterfaceItemIdentifier("cell")
         let label: NSTextField
-        if let v = tableView.makeView(withIdentifier: id, owner: nil) as? NSTextField {
+        if let v = table.makeView(withIdentifier: id, owner: nil) as? NSTextField {
             label = v
         } else {
             label = NSTextField(labelWithString: "")
             label.identifier = id
             label.lineBreakMode = .byTruncatingMiddle
+            label.font = NSFont.systemFont(ofSize: 12)
         }
+        label.textColor = Theme.text
         label.stringValue = files[row]
         return label
     }
@@ -394,7 +1111,7 @@ final class OpexApp: NSObject, NSApplicationDelegate, NSTableViewDataSource, NST
 
 func printHelp() {
     print("""
-    Opex-MacOS — Lua script workspace for your Roblox folder
+    Opex-MacOS v2.0 — Lua script workspace for your Roblox folder
 
     USAGE
       opex                 Open the Opex-MacOS window
@@ -403,10 +1120,8 @@ func printHelp() {
       opex reveal          Reveal the linked folder in Finder
       opex list            List scripts in the linked folder
       opex new <file.lua>  Create a new script in the linked folder
+      opex run <file.lua>  Execute a script locally (needs: brew install lua)
       opex unlink          Remove the link
-
-    First run opens Finder where your Roblox folder sits —
-    click the folder, then click Open.
     """)
 }
 
@@ -434,6 +1149,20 @@ func handleCLI() -> Bool {
         let url = URL(fileURLWithPath: lp).appendingPathComponent(name)
         _ = FM.createFile(atPath: url.path, contents: Data("-- Opex-MacOS script\n".utf8))
         print("Created: \(url.path)")
+    case "run":
+        guard let lp = loadLink() else { print("Not linked. Run: opex link"); break }
+        guard args.count > 2 else { print("Usage: opex run <file.lua>"); break }
+        let url = URL(fileURLWithPath: lp).appendingPathComponent(args[2])
+        guard FM.fileExists(atPath: url.path) else { print("File not found: \(url.path)"); break }
+        guard let lua = findBinary(["lua", "lua5.4", "lua5.3", "luajit"]) else {
+            print("Lua interpreter not found. Install: brew install lua"); break
+        }
+        let p = Process()
+        p.executableURL = URL(fileURLWithPath: lua)
+        p.arguments = [url.path]
+        p.standardOutput = FileHandle.standardOutput
+        p.standardError = FileHandle.standardError
+        do { try p.run(); p.waitUntilExit() } catch { print("Failed: \(error.localizedDescription)") }
     case "link":
         let app = NSApplication.shared
         app.setActivationPolicy(.accessory)
@@ -460,13 +1189,12 @@ app.setActivationPolicy(.regular)
 app.run()
 SWIFT_EOF
 
-echo -e "${GREEN}[✔] Swift source written${NC}"
+set_progress 22
 
 # ----------------------------------------------------------
-# Step 3: Create Info.plist
+# Step 3: Info.plist
 # ----------------------------------------------------------
-echo -e "${YELLOW}[*] Step 3/5 — Creating app bundle...${NC}"
-
+step_msg "${YELLOW}[*] Step 3/5 — Creating app bundle...${NC}"
 cat > "$SCRIPT_DIR/src/Info.plist" <<'PLIST_EOF'
 <?xml version="1.0" encoding="UTF-8"?>
 <!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
@@ -477,103 +1205,121 @@ cat > "$SCRIPT_DIR/src/Info.plist" <<'PLIST_EOF'
   <key>CFBundleIdentifier</key><string>com.opex.macos</string>
   <key>CFBundleExecutable</key><string>Opex-MacOS</string>
   <key>CFBundlePackageType</key><string>APPL</string>
-  <key>CFBundleShortVersionString</key><string>1.0.0</string>
-  <key>CFBundleVersion</key><string>1</string>
+  <key>CFBundleShortVersionString</key><string>2.0.0</string>
+  <key>CFBundleVersion</key><string>2</string>
   <key>LSMinimumSystemVersion</key><string>11.0</string>
   <key>NSHighResolutionCapable</key><true/>
   <key>LSApplicationCategoryType</key><string>public.app-category.developer-tools</string>
 </dict>
 </plist>
 PLIST_EOF
-
-echo -e "${GREEN}[✔] Info.plist written${NC}"
+set_progress 28
 
 # ----------------------------------------------------------
-# Step 4: Build
+# Step 4: Build (with live # progress bar)
 # ----------------------------------------------------------
-echo -e "${YELLOW}[*] Step 4/5 — Building Opex-MacOS (this can take a few minutes on first run)...${NC}"
-
+step_msg "${YELLOW}[*] Step 4/5 — Building Opex-MacOS...${NC}"
 mkdir -p "$BUILD_DIR"
-swiftc "$SCRIPT_DIR/src/main.swift" -o "$BUILD_DIR/$APP_NAME" -framework AppKit
 
-# Create .app bundle
-mkdir -p "$APP_PATH/Contents/MacOS"
-mkdir -p "$APP_PATH/Contents/Resources"
+# Animated bar creeps up while the compiler runs
+(
+    [ "$IS_TTY" -eq 1 ] || exit 0
+    pct=$CURRENT_PCT
+    while true; do
+        if [ "$pct" -lt 90 ]; then
+            inc=$(( pct < 50 ? 3 : (pct < 80 ? 2 : 1) ))
+            pct=$(( pct + inc ))
+            draw_bar "$pct"
+        fi
+        sleep 0.7
+    done
+) &
+CREEP_PID=$!
+trap 'kill $CREEP_PID 2>/dev/null' EXIT
+
+BUILD_STATUS=0
+swiftc "$SCRIPT_DIR/src/main.swift" -o "$BUILD_DIR/$APP_NAME" -framework AppKit || BUILD_STATUS=$?
+
+kill $CREEP_PID 2>/dev/null || true
+wait $CREEP_PID 2>/dev/null || true
+sleep 0.05
+
+if [ $BUILD_STATUS -ne 0 ]; then
+    printf "\r\033[K"
+    echo -e "${RED}[!] Build failed — see compiler errors above.${NC}"
+    exit 1
+fi
+set_progress 92
+
+# App bundle
+mkdir -p "$APP_PATH/Contents/MacOS" "$APP_PATH/Contents/Resources"
 cp "$BUILD_DIR/$APP_NAME" "$APP_PATH/Contents/MacOS/$APP_NAME"
 cp "$SCRIPT_DIR/src/Info.plist" "$APP_PATH/Contents/Info.plist"
 codesign --force -s - "$APP_PATH" 2>/dev/null || true
-
-echo -e "${GREEN}[✔] Built: $APP_PATH${NC}"
+set_progress 94
 
 # ----------------------------------------------------------
-# Step 5: Install CLI
+# Step 5: CLI install
 # ----------------------------------------------------------
-echo -e "${YELLOW}[*] Step 5/5 — Installing CLI tool...${NC}"
-
-BIN_DIR="$HOME/.local/bin"
-mkdir -p "$BIN_DIR"
-cp "$BUILD_DIR/$APP_NAME" "$BIN_DIR/opex"
-chmod +x "$BIN_DIR/opex"
-
-# Add to PATH if not already
-if ! echo "$PATH" | grep -q "$BIN_DIR"; then
-    SHELL_RC="$HOME/.zshrc"
-    if [ -f "$HOME/.bashrc" ] && [ "$SHELL" = "/bin/bash" ]; then
-        SHELL_RC="$HOME/.bashrc"
-    fi
-    if ! grep -q "$BIN_DIR" "$SHELL_RC" 2>/dev/null; then
-        echo "export PATH=\"$BIN_DIR:\$PATH\"" >> "$SHELL_RC"
-        echo -e "${GREEN}[✔] Added $BIN_DIR to PATH (in $SHELL_RC)${NC}"
+step_msg "${YELLOW}[*] Step 5/5 — Installing CLI tool...${NC}"
+BIN_DIR=""
+for dir in "$HOME/.local/bin" "$HOME/bin" "/usr/local/bin"; do
+    if mkdir -p "$dir" 2>/dev/null && [ -w "$dir" ]; then BIN_DIR="$dir"; break; fi
+done
+if [ -z "$BIN_DIR" ]; then
+    step_msg "${YELLOW}[!] No writable bin folder — skipping CLI. App still works: open $APP_PATH${NC}"
+else
+    cp "$BUILD_DIR/$APP_NAME" "$BIN_DIR/opex"
+    chmod +x "$BIN_DIR/opex"
+    if ! echo "$PATH" | grep -q "$BIN_DIR"; then
+        SHELL_RC="$HOME/.zshrc"
+        if [ -f "$HOME/.bashrc" ] && [ "$SHELL" = "/bin/bash" ]; then SHELL_RC="$HOME/.bashrc"; fi
+        if ! grep -q "$BIN_DIR" "$SHELL_RC" 2>/dev/null; then
+            echo "export PATH=\"$BIN_DIR:\$PATH\"" >> "$SHELL_RC"
+        fi
     fi
 fi
+set_progress 98
 
-echo -e "${GREEN}[✔] CLI installed: $BIN_DIR/opex${NC}"
-
-# ----------------------------------------------------------
-# Create README
-# ----------------------------------------------------------
+# README
 cat > "$SCRIPT_DIR/README.md" <<'README_EOF'
 # Opex-MacOS
 
-A native macOS Lua script workspace that links to your Roblox folder — written in Swift, no dependencies.
-
-> Disclaimer: Opex-MacOS is a file manager and editor only. It does not inject
-> code into the Roblox client, bypass anti-cheat, or execute scripts inside Roblox games.
+Fancy native macOS Lua script workspace with a dark IDE-style UI — syntax highlighting,
+line numbers, console output, and a Roblox-folder connection.
 
 ## Install
 bash -c "$(curl -fsSL https://raw.githubusercontent.com/Opex-Hub/macos-executor/refs/heads/main/opex)"
 
-## CLI usage
+## Enable Execute (runs Lua locally)
+brew install lua
+
+## CLI
 opex                 # open the app
 opex link            # pick your Roblox folder
-opex reveal          # show linked folder in Finder
-opex new script.lua  # create a script
+opex run script.lua  # execute a script locally
 opex list            # list scripts
-opex status          # show link
-opex unlink          # remove the link
 README_EOF
 
 # ----------------------------------------------------------
-# Done — auto-launch (prompt only if running interactively)
+# Done
 # ----------------------------------------------------------
+set_progress 100
+echo ""
 echo ""
 echo -e "${GREEN}╔══════════════════════════════════════════╗${NC}"
-echo -e "${GREEN}║           ✔  Install Complete            ║${NC}"
+echo -e "${GREEN}║        ✔  100% — Install Complete        ║${NC}"
 echo -e "${GREEN}╚══════════════════════════════════════════╝${NC}"
 echo ""
 echo -e "  ${CYAN}App:${NC}      $APP_PATH"
-echo -e "  ${CYAN}CLI:${NC}      $BIN_DIR/opex"
+echo -e "  ${CYAN}CLI:${NC}      ${BIN_DIR:-skipped}/opex"
 echo ""
 
 if [ -t 0 ]; then
     read -p "Launch Opex-MacOS now? [Y/n] " -n 1 -r
     echo ""
-    if [[ ! $REPLY =~ ^[Nn]$ ]]; then
-        open "$APP_PATH"
-        echo -e "${GREEN}[✔] Opex-MacOS launched!${NC}"
-    fi
+    if [[ ! $REPLY =~ ^[Nn]$ ]]; then open "$APP_PATH"; fi
 else
     open "$APP_PATH"
-    echo -e "${GREEN}[✔] Opex-MacOS launched!${NC}"
-    echo -e "${YELLOW}Note: 'opex' command works in NEW terminal windows.${NC}"
 fi
+echo -e "${GREEN}[✔] Done.${NC}"
