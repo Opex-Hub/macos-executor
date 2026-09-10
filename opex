@@ -1045,14 +1045,41 @@ final class OpexApp: NSObject, NSApplicationDelegate, NSTextViewDelegate,
             return
         }
         log("▶ Executing \(f) …", Theme.accent, bold: true)
-        runProcess(lua, [url.path]) { [weak self] out, err, code in
+
+        // Write a tiny prelude that pcall-wraps the user script, so any error
+        // (including inside loadstring'd code) is printed to stderr loudly.
+        let preludeURL = FileManager.default.temporaryDirectory
+            .appendingPathComponent("opex-prelude-\(UUID().uuidString).lua")
+        let prelude = """
+        local target = arg[1]
+        local chunk, lerr = loadfile(target)
+        if not chunk then
+            io.stderr:write("=== LOAD ERROR ===\\n" .. tostring(lerr) .. "\\n")
+            os.exit(2)
+        end
+        local ok, rerr = pcall(chunk)
+        if not ok then
+            io.stderr:write("=== RUNTIME ERROR ===\\n" .. tostring(rerr) .. "\\n")
+            io.stderr:write("(If this mentions game, Instance, Players, workspace, etc., " ..
+                            "this is a Roblox script and cannot run outside the Roblox client.)\\n")
+            os.exit(3)
+        end
+        """
+        try? prelude.write(to: preludeURL, atomically: true, encoding: .utf8)
+
+        runProcess(lua, [preludeURL.path, url.path]) { [weak self] out, err, code in
             guard let self = self else { return }
+            try? FileManager.default.removeItem(at: preludeURL)
             let o = out.trimmingCharacters(in: .whitespacesAndNewlines)
             let e = err.trimmingCharacters(in: .whitespacesAndNewlines)
             if !o.isEmpty { self.log(o, Theme.text) }
             if !e.isEmpty { self.log(e, Theme.red) }
-            self.log(code == 0 ? "✔ Finished (exit 0)" : "✖ Exited with code \(code)",
-                     code == 0 ? Theme.green : Theme.red, bold: true)
+            switch code {
+            case 0:  self.log("✔ Finished (exit 0)", Theme.green, bold: true)
+            case 2:  self.log("✖ Script failed to load — see LOAD ERROR above.", Theme.red, bold: true)
+            case 3:  self.log("✖ Script raised a runtime error — see RUNTIME ERROR above.", Theme.red, bold: true)
+            default: self.log("✖ Exited with code \(code)", Theme.red, bold: true)
+            }
         }
     }
 
