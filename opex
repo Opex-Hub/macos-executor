@@ -1379,27 +1379,108 @@ codesign --force -s - "$APP_PATH" 2>/dev/null || true
 set_progress 90
 
 # ----------------------------------------------------------
-# Step 5: Compile bundled Lua 5.4 (NO BREW NEEDED)
+# Step 5: Compile bundled Lua 5.4 + install shim (NO BREW NEEDED)
 # ----------------------------------------------------------
 step_msg "${YELLOW}[*] Step 5/6 — Building bundled Lua interpreter (no brew needed)...${NC}"
 mkdir -p "$OPEX_SUPPORT/bin"
 
-if [ -x "$OPEX_SUPPORT/bin/lua" ]; then
-    step_msg "${GREEN}[✔] Bundled Lua already present — skipping.${NC}"
+# Rebuild if any of the three pieces are missing (upgrades old installs too).
+if [ -x "$OPEX_SUPPORT/bin/lua" ] \
+   && [ -x "$OPEX_SUPPORT/bin/lua-bin" ] \
+   && [ -f "$OPEX_SUPPORT/bin/shim.lua" ] \
+   && [ -x "$OPEX_SUPPORT/bin/luac" ]; then
+    step_msg "${GREEN}[✔] Bundled Lua + shim already present — skipping.${NC}"
 else
     LUA_TGZ="$BUILD_DIR/lua-5.4.6.tar.gz"
     LUA_SRC="$BUILD_DIR/lua-5.4.6"
     LUA_OK=1
     curl -fsSL --max-time 60 -o "$LUA_TGZ" "https://www.lua.org/ftp/lua-5.4.6.tar.gz" || LUA_OK=0
     if [ "$LUA_OK" = "1" ]; then tar -xzf "$LUA_TGZ" -C "$BUILD_DIR" || LUA_OK=0; fi
+
+    # Build without readline (Xcode CLT has no readline; `make macosx` fails on clean Macs).
     if [ "$LUA_OK" = "1" ] && [ -d "$LUA_SRC" ]; then
-        ( cd "$LUA_SRC" && make macosx >/dev/null 2>&1 ) || LUA_OK=0
+        ( cd "$LUA_SRC" && make all \
+            SYSCFLAGS="-DLUA_USE_MACOSX" \
+            SYSLIBS="" \
+            >/dev/null 2>&1 ) || LUA_OK=0
     fi
-    if [ "$LUA_OK" = "1" ] && [ -x "$LUA_SRC/src/lua" ]; then
-        cp "$LUA_SRC/src/lua"  "$OPEX_SUPPORT/bin/lua"
+
+    if [ "$LUA_OK" = "1" ] && [ -x "$LUA_SRC/src/lua" ] && [ -x "$LUA_SRC/src/luac" ]; then
+        # Real binaries live under *-bin / luac. `lua` becomes a wrapper.
+        cp "$LUA_SRC/src/lua"  "$OPEX_SUPPORT/bin/lua-bin"
         cp "$LUA_SRC/src/luac" "$OPEX_SUPPORT/bin/luac"
-        chmod +x "$OPEX_SUPPORT/bin/lua" "$OPEX_SUPPORT/bin/luac"
-        step_msg "${GREEN}[✔] Lua 5.4.6 compiled and bundled — Execute works out of the box.${NC}"
+        chmod +x "$OPEX_SUPPORT/bin/lua-bin" "$OPEX_SUPPORT/bin/luac"
+
+        # ---- shim.lua: executor-style globals on top of vanilla Lua ----
+        cat > "$OPEX_SUPPORT/bin/shim.lua" <<'SHIM_LUA_EOF'
+-- Opex-MacOS Lua shim
+-- Adds executor-style globals to vanilla Lua 5.4 so lines like
+--   loadstring(game:HttpGet("https://.../x.lua"))()
+-- run without modification.
+
+-- loadstring (removed in Lua 5.2+, aliased to load)
+if type(loadstring) ~= "function" then
+    loadstring = function(chunk, chunkname)
+        if type(chunk) ~= "string" then
+            return nil, "loadstring: expected string, got " .. type(chunk)
+        end
+        return load(chunk, chunkname or "=(loadstring)", "t", _G)
+    end
+end
+
+-- Shell single-quote escape (safe for URLs and arbitrary strings)
+local function shell_quote(s)
+    return "'" .. tostring(s):gsub("'", "'\\''") .. "'"
+end
+
+-- HTTP via curl (built into macOS)
+local function http_get(url)
+    if type(url) ~= "string" or url == "" then
+        return nil, "invalid url"
+    end
+    local cmd = "curl -fsSL --max-time 30 " .. shell_quote(url)
+    local p = io.popen(cmd, "r")
+    if not p then return nil, "could not spawn curl" end
+    local body = p:read("*a")
+    -- Lua 5.4: close() returns true/nil,"exit",code/nil,"signal",code
+    local ok = p:close()
+    if not ok then return nil, "curl failed" end
+    if body == nil or body == "" then
+        return nil, "empty response"
+    end
+    return body
+end
+
+-- game:HttpGet / game:HttpGetAsync
+if type(game) ~= "table" then game = {} end
+function game:HttpGet(url)      return http_get(url) end
+function game:HttpGetAsync(url) return http_get(url) end
+
+-- request() / http_request() aliases (used by some loaders)
+local function request_impl(t)
+    if type(t) == "table" and type(t.Url) == "string" then
+        local body = http_get(t.Url)
+        if body == nil then
+            return { Body = "", StatusCode = 0, Success = false, Headers = {} }
+        end
+        return { Body = body, StatusCode = 200, Success = true, Headers = {} }
+    end
+    return { Body = "", StatusCode = 400, Success = false, Headers = {} }
+end
+request      = request_impl
+http_request = request_impl
+SHIM_LUA_EOF
+
+        # ---- wrapper: every `lua` call preloads the shim via LUA_INIT ----
+        cat > "$OPEX_SUPPORT/bin/lua" <<'WRAP_EOF'
+#!/bin/bash
+DIR="$(cd "$(dirname "$0")" && pwd)"
+export LUA_INIT="@$DIR/shim.lua"
+exec "$DIR/lua-bin" "$@"
+WRAP_EOF
+        chmod +x "$OPEX_SUPPORT/bin/lua"
+
+        step_msg "${GREEN}[✔] Lua 5.4.6 + shim installed — loadstring(game:HttpGet(...))() now works.${NC}"
     else
         printf "\r\033[K"
         step_msg "${YELLOW}[!] Could not download/build Lua (offline?). Execute needs: brew install lua${NC}"
@@ -1440,10 +1521,24 @@ Execute works out of the box, no Homebrew needed.
 bash -c "$(curl -fsSL https://raw.githubusercontent.com/Opex-Hub/macos-executor/refs/heads/main/opex)"
 
 ## Features
-- ▶ Execute — runs the current script with the bundled Lua
+- ▶ Execute — runs the current script with the bundled Lua + shim
 - ⚡ Autoexec — scripts in the autoexec/ folder run automatically at launch
 - Open Roblox — launches the Roblox app
 - Syntax highlighting, line numbers, console, PROBLEMS tab (syntax check)
+
+## Shim
+Vanilla Lua 5.4 has no loadstring and no game:HttpGet, so the bundled
+interpreter is wrapped:
+
+  bin/lua-bin   real Lua 5.4.6 binary
+  bin/shim.lua  defines loadstring, game:HttpGet, request
+  bin/lua       wrapper that sets LUA_INIT=@shim.lua then execs lua-bin
+
+This makes the executor idiom work as-is:
+
+  loadstring(game:HttpGet("https://raw.githubusercontent.com/.../x.lua"))()
+
+It does NOT give you a Roblox VM — no Instance, GetService, Players, etc.
 
 ## CLI
 opex                  # open the app
