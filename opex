@@ -1,0 +1,552 @@
+#!/bin/bash
+# ============================================================
+#  Opex-MacOS — All-in-One Installer & Builder
+#  Just run:  chmod +x opex.sh && ./opex.sh
+# ============================================================
+
+set -euo pipefail
+
+APP_NAME="Opex-MacOS"
+BUNDLE_ID="com.opex.macos"
+VERSION="1.0.0"
+SCRIPT_DIR="$(cd "$(dirname "$0")" && pwd)"
+BUILD_DIR="$SCRIPT_DIR/build"
+APP_PATH="$BUILD_DIR/$APP_NAME.app"
+
+# Colors
+RED='\033[0;31m'
+GREEN='\033[0;32m'
+YELLOW='\033[1;33m'
+CYAN='\033[0;36m'
+NC='\033[0m'
+
+echo -e "${CYAN}╔══════════════════════════════════════════╗${NC}"
+echo -e "${CYAN}║     Opex-MacOS — Installer v$VERSION     ║${NC}"
+echo -e "${CYAN}╚══════════════════════════════════════════╝${NC}"
+echo ""
+
+# ----------------------------------------------------------
+# Step 1: Check requirements
+# ----------------------------------------------------------
+echo -e "${YELLOW}[*] Step 1/5 — Checking requirements...${NC}"
+
+if ! xcode-select -p >/dev/null 2>&1; then
+    echo -e "${RED}[!] Xcode Command Line Tools not found.${NC}"
+    echo "    Run:  xcode-select --install"
+    echo "    Then re-run this script."
+    exit 1
+fi
+
+echo -e "${GREEN}[✔] Build tools OK${NC}"
+
+# ----------------------------------------------------------
+# Step 2: Create Swift source
+# ----------------------------------------------------------
+echo -e "${YELLOW}[*] Step 2/5 — Writing Swift source code...${NC}"
+
+mkdir -p "$SCRIPT_DIR/src"
+
+cat > "$SCRIPT_DIR/src/main.swift" <<'SWIFT_EOF'
+import AppKit
+
+// ============================================================
+//  Opex-MacOS — Lua Script Workspace for Roblox
+// ============================================================
+
+let FM   = FileManager.default
+let home = FM.homeDirectoryForCurrentUser
+
+let appSupportPath = home
+    .appendingPathComponent("Library", isDirectory: true)
+    .appendingPathComponent("Application Support", isDirectory: true)
+    .appendingPathComponent("Opex-MacOS", isDirectory: true)
+let configPath = appSupportPath.appendingPathComponent("linked-folder.txt")
+
+let robloxClientFolder = home
+    .appendingPathComponent("Library", isDirectory: true)
+    .appendingPathComponent("Application Support", isDirectory: true)
+    .appendingPathComponent("Roblox", isDirectory: true)
+
+let studioPluginsFolder = home
+    .appendingPathComponent("Documents", isDirectory: true)
+    .appendingPathComponent("Roblox", isDirectory: true)
+    .appendingPathComponent("Plugins", isDirectory: true)
+
+func loadLink() -> String? {
+    guard let raw = try? String(contentsOf: configPath, encoding: .utf8) else { return nil }
+    let p = raw.trimmingCharacters(in: .whitespacesAndNewlines)
+    return p.isEmpty ? nil : p
+}
+
+func saveLink(_ path: String) {
+    try? FM.createDirectory(at: appSupportPath, withIntermediateDirectories: true)
+    try? path.write(to: configPath, atomically: true, encoding: .utf8)
+}
+
+func clearLink() { try? FM.removeItem(at: configPath) }
+
+func ensureDir(_ url: URL) {
+    if !FM.fileExists(atPath: url.path) {
+        try? FM.createDirectory(at: url, withIntermediateDirectories: true)
+    }
+}
+
+func revealInFinder(_ path: String) {
+    NSWorkspace.shared.selectFile(nil, inFileViewerRootedAtPath: path)
+}
+
+func pickFolder() -> String? {
+    let panel = NSOpenPanel()
+    panel.title = "Opex-MacOS — Link Roblox Folder"
+    panel.message = "Click your Roblox folder, then click Open."
+    panel.canChooseDirectories = true
+    panel.canChooseFiles = false
+    panel.canCreateDirectories = true
+    panel.prompt = "Open"
+    panel.directoryURL = FM.fileExists(atPath: robloxClientFolder.path) ? robloxClientFolder : home
+    NSApp.activate(ignoringOtherApps: true)
+    return panel.runModal() == .OK ? panel.url?.path : nil
+}
+
+func openFinderAtRoblox() {
+    if FM.fileExists(atPath: robloxClientFolder.path) {
+        revealInFinder(robloxClientFolder.path)
+    } else {
+        ensureDir(studioPluginsFolder)
+        revealInFinder(studioPluginsFolder.path)
+    }
+}
+
+// ============================================================
+//  GUI App
+// ============================================================
+
+final class OpexApp: NSObject, NSApplicationDelegate, NSTableViewDataSource, NSTableViewDelegate {
+    var window: NSWindow!
+    var table: NSTableView!
+    var editor: NSTextView!
+    var status: NSTextField!
+    var files: [String] = []
+    var linkedPath: String?
+
+    func applicationDidFinishLaunching(_ note: Notification) {
+        linkedPath = loadLink()
+        if linkedPath == nil { openFinderAtRoblox() }
+        buildMenu()
+        buildWindow()
+        reloadFiles()
+        refreshStatus()
+        window.makeKeyAndOrderFront(nil)
+        NSApp.activate(ignoringOtherApps: true)
+    }
+
+    func applicationShouldTerminateAfterLastWindowClosed(_ sender: NSApplication) -> Bool { true }
+
+    // MARK: Menu
+
+    func buildMenu() {
+        let mainMenu = NSMenu()
+
+        let appItem = NSMenuItem()
+        let appMenu = NSMenu()
+        let quit = NSMenuItem(title: "Quit Opex-MacOS",
+                              action: #selector(NSApplication.terminate(_:)), keyEquivalent: "q")
+        appMenu.addItem(quit)
+        appItem.submenu = appMenu
+        mainMenu.addItem(appItem)
+
+        let fileItem = NSMenuItem()
+        let fileMenu = NSMenu(title: "File")
+        for (title, sel, key) in [("New Script", #selector(newScript), "n"),
+                                  ("Save", #selector(saveScript), "s"),
+                                  ("Reveal in Finder", #selector(revealFolder), "r")] {
+            let item = NSMenuItem(title: title, action: sel, keyEquivalent: key)
+            item.target = self
+            fileMenu.addItem(item)
+        }
+        fileItem.submenu = fileMenu
+        mainMenu.addItem(fileItem)
+
+        let helpItem = NSMenuItem()
+        let helpMenu = NSMenu(title: "Help")
+        let about = NSMenuItem(title: "About Opex-MacOS", action: #selector(showAbout), keyEquivalent: "")
+        about.target = self
+        helpMenu.addItem(about)
+        helpItem.submenu = helpMenu
+        mainMenu.addItem(helpItem)
+
+        NSApp.mainMenu = mainMenu
+    }
+
+    @objc func showAbout() {
+        let alert = NSAlert()
+        alert.messageText = "Opex-MacOS"
+        alert.informativeText = """
+        A Lua script workspace that links to your Roblox folder.
+
+        Version 1.0.0
+        Built with Swift for macOS.
+
+        Scripts saved here are plain .lua files.
+        This tool does not inject or execute code in the Roblox client.
+        """
+        alert.runModal()
+    }
+
+    // MARK: Window
+
+    func buildWindow() {
+        window = NSWindow(contentRect: NSRect(x: 0, y: 0, width: 1040, height: 660),
+                          styleMask: [.titled, .closable, .miniaturizable, .resizable],
+                          backing: .buffered, defer: false)
+        window.title = "Opex-MacOS"
+        window.appearance = NSAppearance(named: .darkAqua)
+        window.titlebarAppearsTransparent = true
+        guard let content = window.contentView else { return }
+
+        let newBtn    = NSButton(title: "New Script", target: self, action: #selector(newScript))
+        let saveBtn   = NSButton(title: "Save", target: self, action: #selector(saveScript))
+        let delBtn    = NSButton(title: "Delete", target: self, action: #selector(deleteScript))
+        let revealBtn = NSButton(title: "Reveal in Finder", target: self, action: #selector(revealFolder))
+        let linkBtn   = NSButton(title: "Link Folder…", target: self, action: #selector(linkFolder))
+
+        for btn in [newBtn, saveBtn, delBtn, revealBtn, linkBtn] {
+            btn.bezelStyle = .rounded
+        }
+
+        let toolbar = NSStackView(views: [newBtn, saveBtn, delBtn, revealBtn, linkBtn])
+        toolbar.orientation = .horizontal
+        toolbar.spacing = 8
+        toolbar.edgeInsets = NSEdgeInsets(top: 8, left: 12, bottom: 8, right: 12)
+        toolbar.translatesAutoresizingMaskIntoConstraints = false
+
+        table = NSTableView()
+        table.headerView = nil
+        table.rowHeight = 24
+        table.addTableColumn(NSTableColumn(identifier: NSUserInterfaceItemIdentifier("file")))
+        table.dataSource = self
+        table.delegate = self
+        let tableScroll = NSScrollView()
+        tableScroll.hasVerticalScroller = true
+        tableScroll.documentView = table
+        tableScroll.translatesAutoresizingMaskIntoConstraints = false
+
+        editor = NSTextView()
+        editor.font = NSFont(name: "Menlo", size: 13)
+        editor.isRichText = false
+        editor.allowsUndo = true
+        editor.autoresizingMask = [.width]
+        editor.isVerticallyResizable = true
+        editor.isHorizontallyResizable = false
+        editor.textContainer?.widthTracksTextView = true
+        editor.minSize = NSSize(width: 0, height: 0)
+        editor.maxSize = NSSize(width: .greatestFiniteMagnitude, height: .greatestFiniteMagnitude)
+        editor.insertionPointColor = .controlAccentColor
+        let editorScroll = NSScrollView()
+        editorScroll.hasVerticalScroller = true
+        editorScroll.documentView = editor
+        editorScroll.translatesAutoresizingMaskIntoConstraints = false
+
+        status = NSTextField(labelWithString: "")
+        status.font = NSFont.monospacedSystemFont(ofSize: 11, weight: .regular)
+        status.textColor = .secondaryLabelColor
+        status.translatesAutoresizingMaskIntoConstraints = false
+
+        content.addSubview(toolbar)
+        content.addSubview(tableScroll)
+        content.addSubview(editorScroll)
+        content.addSubview(status)
+
+        NSLayoutConstraint.activate([
+            toolbar.topAnchor.constraint(equalTo: content.topAnchor),
+            toolbar.leadingAnchor.constraint(equalTo: content.leadingAnchor),
+            toolbar.trailingAnchor.constraint(equalTo: content.trailingAnchor),
+
+            tableScroll.topAnchor.constraint(equalTo: toolbar.bottomAnchor, constant: 4),
+            tableScroll.leadingAnchor.constraint(equalTo: content.leadingAnchor),
+            tableScroll.bottomAnchor.constraint(equalTo: status.topAnchor, constant: -6),
+            tableScroll.widthAnchor.constraint(equalToConstant: 250),
+
+            editorScroll.topAnchor.constraint(equalTo: tableScroll.topAnchor),
+            editorScroll.leadingAnchor.constraint(equalTo: tableScroll.trailingAnchor, constant: 6),
+            editorScroll.trailingAnchor.constraint(equalTo: content.trailingAnchor, constant: -10),
+            editorScroll.bottomAnchor.constraint(equalTo: tableScroll.bottomAnchor),
+
+            status.leadingAnchor.constraint(equalTo: content.leadingAnchor, constant: 12),
+            status.trailingAnchor.constraint(equalTo: content.trailingAnchor, constant: -12),
+            status.bottomAnchor.constraint(equalTo: content.bottomAnchor, constant: -6),
+        ])
+    }
+
+    // MARK: Actions
+
+    @objc func newScript() {
+        guard let lp = linkedPath else { askLinkFirst(); return }
+        var i = 1
+        while FM.fileExists(atPath: URL(fileURLWithPath: lp).appendingPathComponent("Untitled-\(i).lua").path) { i += 1 }
+        let url = URL(fileURLWithPath: lp).appendingPathComponent("Untitled-\(i).lua")
+        FM.createFile(atPath: url.path, contents: Data("-- Opex-MacOS script\n".utf8), attributes: nil)
+        reloadFiles()
+        if let idx = files.firstIndex(of: url.lastPathComponent) {
+            table.selectRowIndexes(IndexSet(integer: idx), byExtendingSelection: false)
+        }
+    }
+
+    @objc func saveScript() {
+        guard let lp = linkedPath, table.selectedRow >= 0, table.selectedRow < files.count else { return }
+        let url = URL(fileURLWithPath: lp).appendingPathComponent(files[table.selectedRow])
+        try? editor.string.write(to: url, atomically: true, encoding: .utf8)
+        refreshStatus(saved: true)
+    }
+
+    @objc func deleteScript() {
+        guard let lp = linkedPath, table.selectedRow >= 0, table.selectedRow < files.count else { return }
+        let name = files[table.selectedRow]
+        let alert = NSAlert()
+        alert.messageText = "Delete \(name)?"
+        alert.addButton(withTitle: "Delete")
+        alert.addButton(withTitle: "Cancel")
+        if alert.runModal() == .alertFirstButtonReturn {
+            try? FM.removeItem(at: URL(fileURLWithPath: lp).appendingPathComponent(name))
+            reloadFiles()
+        }
+    }
+
+    @objc func revealFolder() {
+        guard let lp = linkedPath else { askLinkFirst(); return }
+        revealInFinder(lp)
+    }
+
+    @objc func linkFolder() {
+        if let p = pickFolder() {
+            linkedPath = p
+            saveLink(p)
+            reloadFiles()
+            refreshStatus()
+        }
+    }
+
+    func askLinkFirst() {
+        let alert = NSAlert()
+        alert.messageText = "No folder linked"
+        alert.informativeText = "Choose the folder Opex-MacOS should save scripts into."
+        alert.addButton(withTitle: "Choose Folder")
+        alert.addButton(withTitle: "Cancel")
+        if alert.runModal() == .alertFirstButtonReturn { linkFolder() }
+    }
+
+    // MARK: Helpers
+
+    func refreshStatus(saved: Bool = false) {
+        if let lp = linkedPath {
+            status.stringValue = (saved ? "Saved ✔   " : "") + "Linked: \(lp)"
+        } else {
+            status.stringValue = "Not linked — click 'Link Folder…' or run: opex link"
+        }
+    }
+
+    func reloadFiles() {
+        files.removeAll()
+        if let lp = linkedPath, let items = try? FM.contentsOfDirectory(atPath: lp) {
+            files = items
+                .filter { ["lua", "txt", "rbxm", "rbxmx", "json"].contains(($0 as NSString).pathExtension) }
+                .sorted { $0.localizedStandardCompare($1) == .orderedAscending }
+        }
+        table.reloadData()
+        if !files.isEmpty {
+            table.selectRowIndexes(IndexSet(integer: 0), byExtendingSelection: false)
+        }
+    }
+
+    func loadSelected() {
+        let row = table.selectedRow
+        guard row >= 0, row < files.count, let lp = linkedPath else { editor.string = ""; return }
+        let url = URL(fileURLWithPath: lp).appendingPathComponent(files[row])
+        editor.string = (try? String(contentsOf: url, encoding: .utf8)) ?? ""
+    }
+
+    // MARK: TableView
+
+    func numberOfRows(in tableView: NSTableView) -> Int { files.count }
+
+    func tableView(_ tableView: NSTableView, viewFor tableColumn: NSTableColumn?, row: Int) -> NSView? {
+        let id = NSUserInterfaceItemIdentifier("cell")
+        let label: NSTextField
+        if let v = tableView.makeView(withIdentifier: id, owner: nil) as? NSTextField {
+            label = v
+        } else {
+            label = NSTextField(labelWithString: "")
+            label.identifier = id
+            label.lineBreakMode = .byTruncatingMiddle
+        }
+        label.stringValue = files[row]
+        return label
+    }
+
+    func tableViewSelectionDidChange(_ notification: Notification) { loadSelected() }
+}
+
+// ============================================================
+//  CLI
+// ============================================================
+
+func printHelp() {
+    print("""
+    Opex-MacOS — Lua script workspace for your Roblox folder
+
+    USAGE
+      opex                 Open the Opex-MacOS window
+      opex link            Choose the Roblox folder to link (Finder picker)
+      opex status          Show the currently linked folder
+      opex reveal          Reveal the linked folder in Finder
+      opex list            List scripts in the linked folder
+      opex new <file.lua>  Create a new script in the linked folder
+      opex unlink          Remove the link
+
+    First run opens Finder where your Roblox folder sits —
+    click the folder, then click Open.
+    """)
+}
+
+func handleCLI() -> Bool {
+    let args = CommandLine.arguments
+    guard args.count > 1 else { return false }
+    switch args[1] {
+    case "help", "-h", "--help":
+        printHelp()
+    case "status":
+        print(loadLink() ?? "Not linked. Run: opex link")
+    case "unlink":
+        clearLink(); print("Unlinked.")
+    case "reveal":
+        if let lp = loadLink() { revealInFinder(lp) } else { print("Not linked. Run: opex link") }
+    case "list":
+        guard let lp = loadLink(), let items = try? FM.contentsOfDirectory(atPath: lp) else {
+            print("Not linked. Run: opex link"); break
+        }
+        let lua = items.filter { $0.hasSuffix(".lua") }.sorted()
+        print(lua.isEmpty ? "(no scripts yet)" : lua.joined(separator: "\n"))
+    case "new":
+        guard let lp = loadLink() else { print("Not linked. Run: opex link"); break }
+        let name = args.count > 2 ? args[2] : "untitled.lua"
+        let url = URL(fileURLWithPath: lp).appendingPathComponent(name)
+        FM.createFile(atPath: url.path, contents: Data("-- Opex-MacOS script\n".utf8))
+        print("Created: \(url.path)")
+    case "link":
+        let app = NSApplication.shared
+        app.setActivationPolicy(.accessory)
+        openFinderAtRoblox()
+        if let p = pickFolder() { saveLink(p); print("Linked: \(p)") }
+        else { print("Cancelled.") }
+    default:
+        print("Unknown command: \(args[1])\n")
+        printHelp()
+    }
+    return true
+}
+
+// ============================================================
+//  Entry point
+// ============================================================
+
+if handleCLI() { exit(0) }
+
+let app = NSApplication.shared
+let delegate = OpexApp()
+app.delegate = delegate
+app.setActivationPolicy(.regular)
+app.run()
+SWIFT_EOF
+
+echo -e "${GREEN}[✔] Swift source written${NC}"
+
+# ----------------------------------------------------------
+# Step 3: Create Info.plist
+# ----------------------------------------------------------
+echo -e "${YELLOW}[*] Step 3/5 — Creating app bundle...${NC}"
+
+cat > "$SCRIPT_DIR/src/Info.plist" <<'PLIST_EOF'
+<?xml version="1.0" encoding="UTF-8"?>
+<!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
+<plist version="1.0">
+<dict>
+  <key>CFBundleName</key><string>Opex-MacOS</string>
+  <key>CFBundleDisplayName</key><string>Opex-MacOS</string>
+  <key>CFBundleIdentifier</key><string>com.opex.macos</string>
+  <key>CFBundleExecutable</key><string>Opex-MacOS</string>
+  <key>CFBundlePackageType</key><string>APPL</string>
+  <key>CFBundleShortVersionString</key><string>1.0.0</string>
+  <key>CFBundleVersion</key><string>1</string>
+  <key>LSMinimumSystemVersion</key><string>11.0</string>
+  <key>NSHighResolutionCapable</key><true/>
+  <key>LSApplicationCategoryType</key><string>public.app-category.developer-tools</string>
+</dict>
+</plist>
+PLIST_EOF
+
+echo -e "${GREEN}[✔] Info.plist written${NC}"
+
+# ----------------------------------------------------------
+# Step 4: Build
+# ----------------------------------------------------------
+echo -e "${YELLOW}[*] Step 4/5 — Building Opex-MacOS...${NC}"
+
+mkdir -p "$BUILD_DIR"
+swiftc "$SCRIPT_DIR/src/main.swift" -o "$BUILD_DIR/$APP_NAME" -framework AppKit -O
+
+# Create .app bundle
+mkdir -p "$APP_PATH/Contents/MacOS"
+mkdir -p "$APP_PATH/Contents/Resources"
+cp "$BUILD_DIR/$APP_NAME" "$APP_PATH/Contents/MacOS/$APP_NAME"
+cp "$SCRIPT_DIR/src/Info.plist" "$APP_PATH/Contents/Info.plist"
+codesign --force -s - "$APP_PATH" 2>/dev/null || true
+
+echo -e "${GREEN}[✔] Built: $APP_PATH${NC}"
+
+# ----------------------------------------------------------
+# Step 5: Install CLI
+# ----------------------------------------------------------
+echo -e "${YELLOW}[*] Step 5/5 — Installing CLI tool...${NC}"
+
+BIN_DIR="$HOME/.local/bin"
+mkdir -p "$BIN_DIR"
+cp "$BUILD_DIR/$APP_NAME" "$BIN_DIR/opex"
+chmod +x "$BIN_DIR/opex"
+
+# Add to PATH if not already
+if ! echo "$PATH" | grep -q "$BIN_DIR"; then
+    SHELL_RC="$HOME/.zshrc"
+    if [ -f "$HOME/.bashrc" ] && [ "$SHELL" = "/bin/bash" ]; then
+        SHELL_RC="$HOME/.bashrc"
+    fi
+    if ! grep -q "$BIN_DIR" "$SHELL_RC" 2>/dev/null; then
+        echo "export PATH=\"$BIN_DIR:\$PATH\"" >> "$SHELL_RC"
+        echo -e "${GREEN}[✔] Added $BIN_DIR to PATH (in $SHELL_RC)${NC}"
+    fi
+fi
+
+echo -e "${GREEN}[✔] CLI installed: $BIN_DIR/opex${NC}"
+
+# ----------------------------------------------------------
+# Create README
+# ----------------------------------------------------------
+cat > "$SCRIPT_DIR/README.md" <<'README_EOF'
+# Opex-MacOS
+
+A native macOS Lua script workspace that links to your Roblox folder — written in Swift, no dependencies.
+
+> ⚠️ **Disclaimer:** Opex-MacOS is a **file manager and editor only**. It does **not** inject
+> code into the Roblox client, bypass anti-cheat, or execute scripts inside Roblox games.
+> Doing that violates the Roblox Terms of Use. Scripts saved here are plain `.lua` files.
+
+## Features
+- On first run, Finder opens **directly where the Roblox folder sits** — you click the folder, then click **Open** to link it (100% manual, nothing is touched without your click)
+- Script list + built-in editor (Menlo, dark theme)
+- Save / New / Delete scripts as real `.lua` files in the linked folder
+- Terminal CLI: `opex link`, `opex list`, `opex new`, `opex reveal`, `opex status`
+- Recommended link target: `~/Documents/Roblox/Plugins` — **Roblox Studio automatically loads scripts placed in this folder**
+
+## Install
+```bash
+chmod +x opex.sh
+./opex.sh
