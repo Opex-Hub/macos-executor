@@ -1,7 +1,7 @@
 #!/bin/bash
 # ============================================================
 #  Opex-MacOS — All-in-One Installer & Builder
-#  Just run:  chmod +x opex.sh && ./opex.sh
+#  Install:  bash -c "$(curl -fsSL https://raw.githubusercontent.com/Opex-Hub/macos-executor/refs/heads/main/opex)"
 # ============================================================
 
 set -euo pipefail
@@ -9,7 +9,9 @@ set -euo pipefail
 APP_NAME="Opex-MacOS"
 BUNDLE_ID="com.opex.macos"
 VERSION="1.0.0"
-SCRIPT_DIR="$(cd "$(dirname "$0")" && pwd)"
+SCRIPT_DIR="$(cd "$(dirname "$0")" 2>/dev/null && pwd || pwd)"
+# When piped via curl, build in home directory
+if [ ! -w "$SCRIPT_DIR" ]; then SCRIPT_DIR="$HOME"; fi
 BUILD_DIR="$SCRIPT_DIR/build"
 APP_PATH="$BUILD_DIR/$APP_NAME.app"
 
@@ -240,7 +242,7 @@ final class OpexApp: NSObject, NSApplicationDelegate, NSTableViewDataSource, NST
         editor.isHorizontallyResizable = false
         editor.textContainer?.widthTracksTextView = true
         editor.minSize = NSSize(width: 0, height: 0)
-        editor.maxSize = NSSize(width: .greatestFiniteMagnitude, height: .greatestFiniteMagnitude)
+        editor.maxSize = NSSize(width: CGFloat.greatestFiniteMagnitude, height: CGFloat.greatestFiniteMagnitude)
         editor.insertionPointColor = .controlAccentColor
         let editorScroll = NSScrollView()
         editorScroll.hasVerticalScroller = true
@@ -285,7 +287,7 @@ final class OpexApp: NSObject, NSApplicationDelegate, NSTableViewDataSource, NST
         var i = 1
         while FM.fileExists(atPath: URL(fileURLWithPath: lp).appendingPathComponent("Untitled-\(i).lua").path) { i += 1 }
         let url = URL(fileURLWithPath: lp).appendingPathComponent("Untitled-\(i).lua")
-        FM.createFile(atPath: url.path, contents: Data("-- Opex-MacOS script\n".utf8), attributes: nil)
+        _ = FM.createFile(atPath: url.path, contents: Data("-- Opex-MacOS script\n".utf8))
         reloadFiles()
         if let idx = files.firstIndex(of: url.lastPathComponent) {
             table.selectRowIndexes(IndexSet(integer: idx), byExtendingSelection: false)
@@ -430,7 +432,7 @@ func handleCLI() -> Bool {
         guard let lp = loadLink() else { print("Not linked. Run: opex link"); break }
         let name = args.count > 2 ? args[2] : "untitled.lua"
         let url = URL(fileURLWithPath: lp).appendingPathComponent(name)
-        FM.createFile(atPath: url.path, contents: Data("-- Opex-MacOS script\n".utf8))
+        _ = FM.createFile(atPath: url.path, contents: Data("-- Opex-MacOS script\n".utf8))
         print("Created: \(url.path)")
     case "link":
         let app = NSApplication.shared
@@ -489,10 +491,10 @@ echo -e "${GREEN}[✔] Info.plist written${NC}"
 # ----------------------------------------------------------
 # Step 4: Build
 # ----------------------------------------------------------
-echo -e "${YELLOW}[*] Step 4/5 — Building Opex-MacOS...${NC}"
+echo -e "${YELLOW}[*] Step 4/5 — Building Opex-MacOS (this can take a few minutes on first run)...${NC}"
 
 mkdir -p "$BUILD_DIR"
-swiftc "$SCRIPT_DIR/src/main.swift" -o "$BUILD_DIR/$APP_NAME" -framework AppKit -O
+swiftc "$SCRIPT_DIR/src/main.swift" -o "$BUILD_DIR/$APP_NAME" -framework AppKit
 
 # Create .app bundle
 mkdir -p "$APP_PATH/Contents/MacOS"
@@ -535,18 +537,43 @@ cat > "$SCRIPT_DIR/README.md" <<'README_EOF'
 
 A native macOS Lua script workspace that links to your Roblox folder — written in Swift, no dependencies.
 
-> ⚠️ **Disclaimer:** Opex-MacOS is a **file manager and editor only**. It does **not** inject
+> Disclaimer: Opex-MacOS is a file manager and editor only. It does not inject
 > code into the Roblox client, bypass anti-cheat, or execute scripts inside Roblox games.
-> Doing that violates the Roblox Terms of Use. Scripts saved here are plain `.lua` files.
-
-## Features
-- On first run, Finder opens **directly where the Roblox folder sits** — you click the folder, then click **Open** to link it (100% manual, nothing is touched without your click)
-- Script list + built-in editor (Menlo, dark theme)
-- Save / New / Delete scripts as real `.lua` files in the linked folder
-- Terminal CLI: `opex link`, `opex list`, `opex new`, `opex reveal`, `opex status`
-- Recommended link target: `~/Documents/Roblox/Plugins` — **Roblox Studio automatically loads scripts placed in this folder**
 
 ## Install
-```bash
-chmod +x opex.sh
-./opex.sh
+bash -c "$(curl -fsSL https://raw.githubusercontent.com/Opex-Hub/macos-executor/refs/heads/main/opex)"
+
+## CLI usage
+opex                 # open the app
+opex link            # pick your Roblox folder
+opex reveal          # show linked folder in Finder
+opex new script.lua  # create a script
+opex list            # list scripts
+opex status          # show link
+opex unlink          # remove the link
+README_EOF
+
+# ----------------------------------------------------------
+# Done — auto-launch (prompt only if running interactively)
+# ----------------------------------------------------------
+echo ""
+echo -e "${GREEN}╔══════════════════════════════════════════╗${NC}"
+echo -e "${GREEN}║           ✔  Install Complete            ║${NC}"
+echo -e "${GREEN}╚══════════════════════════════════════════╝${NC}"
+echo ""
+echo -e "  ${CYAN}App:${NC}      $APP_PATH"
+echo -e "  ${CYAN}CLI:${NC}      $BIN_DIR/opex"
+echo ""
+
+if [ -t 0 ]; then
+    read -p "Launch Opex-MacOS now? [Y/n] " -n 1 -r
+    echo ""
+    if [[ ! $REPLY =~ ^[Nn]$ ]]; then
+        open "$APP_PATH"
+        echo -e "${GREEN}[✔] Opex-MacOS launched!${NC}"
+    fi
+else
+    open "$APP_PATH"
+    echo -e "${GREEN}[✔] Opex-MacOS launched!${NC}"
+    echo -e "${YELLOW}Note: 'opex' command works in NEW terminal windows.${NC}"
+fi
