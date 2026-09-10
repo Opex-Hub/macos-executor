@@ -1,13 +1,13 @@
 #!/bin/bash
 # ============================================================
-#  Opex-MacOS v2.1 — Installer with # progress bar
+#  Opex-MacOS v2.1.1 — Installer with # progress bar
 #  Install:  bash -c "$(curl -fsSL https://raw.githubusercontent.com/Opex-Hub/macos-executor/refs/heads/main/opex)"
 # ============================================================
 
 set -euo pipefail
 
 APP_NAME="Opex-MacOS"
-VERSION="2.1.0"
+VERSION="2.1.1"
 SCRIPT_DIR="$(cd "$(dirname "$0")" 2>/dev/null && pwd || pwd)"
 if [ ! -w "$SCRIPT_DIR" ]; then SCRIPT_DIR="$HOME"; fi
 BUILD_DIR="$SCRIPT_DIR/build"
@@ -15,7 +15,7 @@ APP_PATH="$BUILD_DIR/$APP_NAME.app"
 
 RED='\033[0;31m'; GREEN='\033[0;32m'; YELLOW='\033[1;33m'; CYAN='\033[0;36m'; BOLD='\033[1m'; NC='\033[0m'
 
-# ---------- Progress bar (fills with # , updates as % climbs) ----------
+# ---------- Progress bar (fills with #) ----------
 IS_TTY=1
 [ -t 1 ] || IS_TTY=0
 CURRENT_PCT=0
@@ -58,7 +58,6 @@ if ! xcode-select -p >/dev/null 2>&1; then
     printf "\r\033[K"
     echo -e "${RED}[!] Xcode Command Line Tools not found.${NC}"
     echo "    Run:  xcode-select --install"
-    echo "    Then re-run this script."
     exit 1
 fi
 set_progress 10
@@ -73,15 +72,15 @@ cat > "$SCRIPT_DIR/src/main.swift" <<'SWIFT_EOF'
 import AppKit
 
 // ============================================================
-//  Opex-MacOS v2.0 — Lua Script Workspace (fancy edition)
+//  Opex-MacOS v2.1.1 — Lua Script Workspace (fancy edition)
 // ============================================================
 
 let FM   = FileManager.default
 let home = FM.homeDirectoryForCurrentUser
 
-let appSupportPath     = home.appendingPathComponent("Library/Application Support/Opex-MacOS", isDirectory: true)
-let configPath         = appSupportPath.appendingPathComponent("linked-folder.txt")
-let robloxClientFolder = home.appendingPathComponent("Library/Application Support/Roblox", isDirectory: true)
+let appSupportPath      = home.appendingPathComponent("Library/Application Support/Opex-MacOS", isDirectory: true)
+let configPath          = appSupportPath.appendingPathComponent("linked-folder.txt")
+let robloxClientFolder  = home.appendingPathComponent("Library/Application Support/Roblox", isDirectory: true)
 let studioPluginsFolder = home.appendingPathComponent("Documents/Roblox/Plugins", isDirectory: true)
 
 func loadLink() -> String? {
@@ -266,70 +265,69 @@ final class TextButton: NSButton {
     }
 }
 
-// MARK: - Line-number gutter
+// MARK: - Line-number gutter (custom view — no NSRulerView)
 
-final class GutterRuler: NSRulerView {
+final class GutterView: NSView {
     weak var textView: NSTextView?
+    private var observing = false
 
     init(textView: NSTextView) {
         self.textView = textView
+        super.init(frame: NSRect(x: 0, y: 0, width: 44, height: 10))
         textView.postsFrameChangedNotifications = true
-        super.init(scrollView: textView.enclosingScrollView ?? NSScrollView(), orientation: .verticalRuler)
-        clientView = textView
-        isFlipped = true
-        thickness = 46
         let nc = NotificationCenter.default
-        nc.addObserver(self, selector: #selector(refresh), name: NSText.didChangeNotification, object: textView)
-        nc.addObserver(self, selector: #selector(refresh), name: NSView.frameDidChangeNotification, object: textView)
-        if let clip = textView.enclosingScrollView?.contentView {
-            clip.postsBoundsChangedNotifications = true
-            nc.addObserver(self, selector: #selector(refresh), name: NSView.boundsDidChangeNotification, object: clip)
-        }
+        nc.addObserver(self, selector: #selector(refresh),
+                       name: NSText.didChangeNotification, object: textView)
+        nc.addObserver(self, selector: #selector(refresh),
+                       name: NSView.frameDidChangeNotification, object: textView)
     }
-    required init(coder: NSCoder) { fatalError("unsupported") }
+    required init?(coder: NSCoder) { fatalError("unsupported") }
 
-    @objc func refresh() { updateThickness(); needsDisplay = true }
+    @objc func refresh() { needsDisplay = true }
 
-    func updateThickness() {
-        guard let tv = textView else { return }
-        let newlines = (tv.string as NSString).replacingOccurrences(of: "[^\n]", with: "", options: .regularExpression).count
-        let lines = max(1, newlines + 1)
-        let w = 26 + CGFloat(String(lines).count) * 7.5
-        if abs(thickness - w) > 0.5 { thickness = w }
+    override var isFlipped: Bool { true }
+
+    override func viewDidMoveToWindow() {
+        super.viewDidMoveToWindow()
+        guard !observing, window != nil,
+              let clip = textView?.enclosingScrollView?.contentView else { return }
+        clip.postsBoundsChangedNotifications = true
+        NotificationCenter.default.addObserver(self, selector: #selector(refresh),
+                                               name: NSView.boundsDidChangeNotification, object: clip)
+        observing = true
     }
 
-    override func drawHashMarksAndLabels(in rect: NSRect) {
+    override func draw(_ dirtyRect: NSRect) {
         guard let tv = textView, let lm = tv.layoutManager, let container = tv.textContainer else { return }
-        let text = tv.string as NSString
         Theme.editor.setFill()
         bounds.fill()
         Theme.border.setFill()
         NSRect(x: bounds.maxX - 1, y: 0, width: 1, height: bounds.height).fill()
 
-        let glyphRange = lm.glyphRange(forBoundingRect: tv.visibleRect, in: container)
-        var glyphIndex = glyphRange.location
-        while glyphIndex < NSMaxRange(glyphRange) {
-            var lineGlyphRange = NSRange()
-            let lineRect = lm.lineFragmentRect(forGlyphAt: glyphIndex, effectiveRange: &lineGlyphRange)
-            let charRange = lm.characterRange(forGlyphRange: NSRange(location: glyphIndex, length: 0), actualGlyphRange: nil)
-            let before = text.substring(with: NSRange(location: 0, length: max(0, min(charRange.location, text.length))))
-            let n = before.components(separatedBy: "\n").count
-            drawNumber(n, forLineRect: lineRect, tv: tv)
-            glyphIndex = NSMaxRange(lineGlyphRange)
-        }
-    }
-
-    private func drawNumber(_ n: Int, forLineRect lineRect: NSRect, tv: NSTextView) {
+        let text = tv.string as NSString
+        let visible = lm.glyphRange(forBoundingRect: tv.visibleRect, in: container)
         let attrs: [NSAttributedString.Key: Any] = [
             .font: NSFont.monospacedDigitSystemFont(ofSize: 10.5, weight: .regular),
             .foregroundColor: Theme.dim
         ]
-        let s = NSAttributedString(string: String(n), attributes: attrs)
-        let size = s.size()
-        let yInTv = lineRect.minY + tv.textContainerOrigin.y
-        let inRuler = convert(NSRect(x: 0, y: yInTv, width: 0, height: lineRect.height), from: tv)
-        s.draw(at: NSPoint(x: bounds.width - 10 - size.width,
-                           y: inRuler.minY + max(0, (inRuler.height - size.height) / 2)))
+        var glyph = visible.location
+        while glyph < NSMaxRange(visible) {
+            var lineGlyphs = NSRange()
+            let lineRect = lm.lineFragmentRect(forGlyphAt: glyph, effectiveRange: &lineGlyphs)
+            if NSMaxRange(lineGlyphs) <= glyph { break }
+            let charIndex = lm.characterIndexForGlyph(at: glyph)
+            if charIndex != NSNotFound {
+                let before = text.substring(to: min(charIndex, text.length))
+                let lineNumber = before.components(separatedBy: "\n").count
+                let s = NSAttributedString(string: String(lineNumber), attributes: attrs)
+                let sz = s.size()
+                let y = lineRect.minY + tv.textContainerOrigin.y
+                let p = convert(NSPoint(x: 0, y: y), from: tv)
+                s.draw(at: NSPoint(x: bounds.width - 10 - sz.width,
+                                   y: p.y + max(0, (lineRect.height - sz.height) / 2)))
+            }
+            glyph = NSMaxRange(lineGlyphs)
+        }
     }
 }
 
@@ -385,12 +383,13 @@ enum LuaHighlight {
 // MARK: - Main app
 
 final class OpexApp: NSObject, NSApplicationDelegate, NSTextViewDelegate,
-                     NSTableViewDataSource, NSTableViewDelegate, NSControlTextEditingDelegate {
+                     NSTableViewDataSource, NSTableViewDelegate,
+                     NSSearchFieldDelegate, NSControlTextEditingDelegate {
 
     var window: NSWindow!
     var table: NSTableView!
     var editor: NSTextView!
-    var gutter: GutterRuler!
+    var gutter: GutterView!
     var status: NSTextField!
     var interpLabel: NSTextField!
     var tabLabel: NSTextField!
@@ -507,7 +506,7 @@ final class OpexApp: NSObject, NSApplicationDelegate, NSTextViewDelegate,
         a.informativeText = """
         Fancy Lua script workspace for your Roblox folder.
 
-        Version 2.0.0 — Swift, no dependencies.
+        Version 2.1.1 — Swift, no dependencies.
 
         • Execute runs scripts locally with a Lua interpreter.
         • → Studio sends scripts to Roblox Studio's Plugins folder.
@@ -590,7 +589,6 @@ final class OpexApp: NSObject, NSApplicationDelegate, NSTextViewDelegate,
         table.dataSource = self
         table.delegate = self
         table.backgroundColor = .clear
-        if #available(macOS 11.0, *) { table.style = .inset }
         let tableScroll = NSScrollView()
         tableScroll.hasVerticalScroller = true
         tableScroll.drawsBackground = false
@@ -658,12 +656,12 @@ final class OpexApp: NSObject, NSApplicationDelegate, NSTextViewDelegate,
         editorScroll.drawsBackground = false
         editorScroll.scrollerStyle = .overlay
         editorScroll.documentView = editor
-        editorScroll.hasVerticalRuler = true
-        editorScroll.rulersVisible = true
-        gutter = GutterRuler(textView: editor)
-        editorScroll.verticalRulerView = gutter
         editorContainer.addSubview(editorScroll)
         editorScroll.translatesAutoresizingMaskIntoConstraints = false
+
+        gutter = GutterView(textView: editor)
+        editorContainer.addSubview(gutter)
+        gutter.translatesAutoresizingMaskIntoConstraints = false
 
         // ===== Console panel =====
         let consoleWrap = solidView(Theme.panel)
@@ -798,8 +796,13 @@ final class OpexApp: NSObject, NSApplicationDelegate, NSTextViewDelegate,
             editorContainer.trailingAnchor.constraint(equalTo: content.trailingAnchor),
             editorContainer.bottomAnchor.constraint(equalTo: consoleTopBorder.topAnchor),
 
+            gutter.leadingAnchor.constraint(equalTo: editorContainer.leadingAnchor),
+            gutter.topAnchor.constraint(equalTo: editorContainer.topAnchor),
+            gutter.bottomAnchor.constraint(equalTo: editorContainer.bottomAnchor),
+            gutter.widthAnchor.constraint(equalToConstant: 44),
+
             editorScroll.topAnchor.constraint(equalTo: editorContainer.topAnchor),
-            editorScroll.leadingAnchor.constraint(equalTo: editorContainer.leadingAnchor),
+            editorScroll.leadingAnchor.constraint(equalTo: gutter.trailingAnchor),
             editorScroll.trailingAnchor.constraint(equalTo: editorContainer.trailingAnchor),
             editorScroll.bottomAnchor.constraint(equalTo: editorContainer.bottomAnchor),
 
@@ -1111,7 +1114,7 @@ final class OpexApp: NSObject, NSApplicationDelegate, NSTextViewDelegate,
 
 func printHelp() {
     print("""
-    Opex-MacOS v2.0 — Lua script workspace for your Roblox folder
+    Opex-MacOS v2.1 — Lua script workspace for your Roblox folder
 
     USAGE
       opex                 Open the Opex-MacOS window
@@ -1205,8 +1208,8 @@ cat > "$SCRIPT_DIR/src/Info.plist" <<'PLIST_EOF'
   <key>CFBundleIdentifier</key><string>com.opex.macos</string>
   <key>CFBundleExecutable</key><string>Opex-MacOS</string>
   <key>CFBundlePackageType</key><string>APPL</string>
-  <key>CFBundleShortVersionString</key><string>2.0.0</string>
-  <key>CFBundleVersion</key><string>2</string>
+  <key>CFBundleShortVersionString</key><string>2.1.1</string>
+  <key>CFBundleVersion</key><string>3</string>
   <key>LSMinimumSystemVersion</key><string>11.0</string>
   <key>NSHighResolutionCapable</key><true/>
   <key>LSApplicationCategoryType</key><string>public.app-category.developer-tools</string>
@@ -1221,7 +1224,6 @@ set_progress 28
 step_msg "${YELLOW}[*] Step 4/5 — Building Opex-MacOS...${NC}"
 mkdir -p "$BUILD_DIR"
 
-# Animated bar creeps up while the compiler runs
 (
     [ "$IS_TTY" -eq 1 ] || exit 0
     pct=$CURRENT_PCT
@@ -1251,7 +1253,6 @@ if [ $BUILD_STATUS -ne 0 ]; then
 fi
 set_progress 92
 
-# App bundle
 mkdir -p "$APP_PATH/Contents/MacOS" "$APP_PATH/Contents/Resources"
 cp "$BUILD_DIR/$APP_NAME" "$APP_PATH/Contents/MacOS/$APP_NAME"
 cp "$SCRIPT_DIR/src/Info.plist" "$APP_PATH/Contents/Info.plist"
@@ -1281,7 +1282,6 @@ else
 fi
 set_progress 98
 
-# README
 cat > "$SCRIPT_DIR/README.md" <<'README_EOF'
 # Opex-MacOS
 
