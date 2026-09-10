@@ -1,7 +1,6 @@
 #!/bin/bash
 # ============================================================
 #  Opex-MacOS v2.2 — Installer (bundles its own Lua, no brew)
-#  Install:  bash -c "$(curl -fsSL https://raw.githubusercontent.com/Opex-Hub/macos-executor/refs/heads/main/opex)"
 # ============================================================
 
 set -euo pipefail
@@ -48,9 +47,6 @@ echo -e "${CYAN}╚════════════════════�
 echo ""
 set_progress 0
 
-# ----------------------------------------------------------
-# Step 1: Requirements
-# ----------------------------------------------------------
 step_msg "${YELLOW}[*] Step 1/6 — Checking requirements...${NC}"
 if ! xcode-select -p >/dev/null 2>&1; then
     printf "\r\033[K"
@@ -60,19 +56,11 @@ if ! xcode-select -p >/dev/null 2>&1; then
 fi
 set_progress 8
 
-# ----------------------------------------------------------
-# Step 2: Swift source
-# ----------------------------------------------------------
 step_msg "${YELLOW}[*] Step 2/6 — Writing Swift source code...${NC}"
 mkdir -p "$SCRIPT_DIR/src"
 
 cat > "$SCRIPT_DIR/src/main.swift" <<'SWIFT_EOF'
 import AppKit
-
-// ============================================================
-//  Opex-MacOS v2.2 — Lua Script Workspace
-//  Execute works out of the box (bundled Lua) + autoexec.
-// ============================================================
 
 let FM   = FileManager.default
 let home = FM.homeDirectoryForCurrentUser
@@ -125,7 +113,6 @@ func findBinary(_ names: [String]) -> String? {
     return nil
 }
 
-/// Bundled Lua (installed by the installer) is preferred; PATH is the fallback.
 func resolveLua() -> String? {
     let bundled = appSupportPath.appendingPathComponent("bin/lua")
     if FM.isExecutableFile(atPath: bundled.path) { return bundled.path }
@@ -158,54 +145,6 @@ func runProcess(_ path: String, _ args: [String], completion: @escaping (String,
     }
 }
 
-// MARK: - Roblox Injection Functions
-
-/// Find the running Roblox process ID
-func findRobloxPID() -> pid_t? {
-    let task = Process()
-    task.executableURL = URL(fileURLWithPath: "/bin/ps")
-    task.arguments = ["aux"]
-    
-    let pipe = Pipe()
-    task.standardOutput = pipe
-    
-    do {
-        try task.run()
-        task.waitUntilExit()
-        
-        let data = pipe.fileHandleForReading.readDataToEndOfFile()
-        guard let output = String(data: data, encoding: .utf8) else { return nil }
-        
-        // Look for Roblox processes
-        for line in output.components(separatedBy: .newlines) {
-            if line.contains("RobloxPlayer") || line.contains("RobloxStudio") {
-                let components = line.split(separator: " ", omittingEmptySubsequences: true)
-                if components.count > 1,
-                   let pid = pid_t(String(components[1])) {
-                    return pid
-                }
-            }
-        }
-    } catch {
-        return nil
-    }
-    
-    return nil
-}
-
-/// Inject script into Roblox process using dlopen
-func injectScriptIntoRoblox(_ script: String) -> Bool {
-    guard let pid = findRobloxPID() else {
-        return false
-    }
-    
-    // This is a simplified approach - a real implementation would be more complex
-    // For now, we'll just simulate the injection capability
-    return true
-}
-
-// MARK: - Theme
-
 struct Theme {
     static let bg      = NSColor(srgbRed: 0.051, green: 0.059, blue: 0.078, alpha: 1)
     static let sidebar = NSColor(srgbRed: 0.067, green: 0.075, blue: 0.098, alpha: 1)
@@ -226,8 +165,6 @@ func solidView(_ color: NSColor, _ radius: CGFloat = 0) -> NSView {
     v.layer?.cornerRadius = radius
     return v
 }
-
-// MARK: - Pill Button
 
 final class PillButton: NSButton {
     private var baseColor: NSColor
@@ -271,8 +208,6 @@ final class PillButton: NSButton {
     }
 }
 
-// MARK: - Text Button
-
 final class TextButton: NSButton {
     private var active = false
     private let normalColor: NSColor
@@ -310,8 +245,6 @@ final class TextButton: NSButton {
         return NSSize(width: s.width + 14, height: 20)
     }
 }
-
-// MARK: - Line-number gutter
 
 final class GutterView: NSView {
     weak var textView: NSTextView?
@@ -377,8 +310,6 @@ final class GutterView: NSView {
     }
 }
 
-// MARK: - Lua syntax highlighting
-
 enum LuaHighlight {
     static let font = NSFont(name: "Menlo", size: 13) ?? NSFont.monospacedSystemFont(ofSize: 13, weight: .regular)
     static let italicFont = NSFontManager.shared.convert(font, toHaveTrait: .italicFontMask)
@@ -426,8 +357,6 @@ enum LuaHighlight {
     }
 }
 
-// MARK: - Main app
-
 final class OpexApp: NSObject, NSApplicationDelegate, NSTextViewDelegate,
                      NSTableViewDataSource, NSTableViewDelegate,
                      NSSearchFieldDelegate, NSControlTextEditingDelegate {
@@ -459,8 +388,6 @@ final class OpexApp: NSObject, NSApplicationDelegate, NSTextViewDelegate,
     var activeTab = 0
     var collapsed = false
     var consoleHeight: NSLayoutConstraint!
-
-    // ---------- Lifecycle ----------
 
     func applicationDidFinishLaunching(_ note: Notification) {
         linkedPath = loadLink()
@@ -495,8 +422,6 @@ final class OpexApp: NSObject, NSApplicationDelegate, NSTextViewDelegate,
     }
 
     func applicationShouldTerminateAfterLastWindowClosed(_ sender: NSApplication) -> Bool { true }
-
-    // ---------- Auto-execute ----------
 
     func autoexecDir() -> URL? {
         guard let lp = linkedPath else { return nil }
@@ -539,8 +464,6 @@ final class OpexApp: NSObject, NSApplicationDelegate, NSTextViewDelegate,
         revealInFinder(dir.path)
     }
 
-    // ---------- Open Roblox ----------
-
     @objc func openRoblox() {
         var appURL: URL?
         for p in ["/Applications/Roblox.app", robloxAppUserPath.path] {
@@ -557,8 +480,6 @@ final class OpexApp: NSObject, NSApplicationDelegate, NSTextViewDelegate,
             log("✖ Roblox.app not found in /Applications — install it from roblox.com first.", Theme.red, bold: true)
         }
     }
-
-    // ---------- Menu ----------
 
     func buildMenu() {
         let main = NSMenu()
@@ -592,10 +513,6 @@ final class OpexApp: NSObject, NSApplicationDelegate, NSTextViewDelegate,
         let run = NSMenuItem(title: "Execute", action: #selector(execute), keyEquivalent: "r")
         run.target = self
         scriptMenu.addItem(run)
-
-        let inject = NSMenuItem(title: "Inject to Roblox", action: #selector(injectToRoblox), keyEquivalent: "i")
-        inject.target = self
-        scriptMenu.addItem(inject)
 
         let check = NSMenuItem(title: "Check Syntax", action: #selector(checkProblems), keyEquivalent: "p")
         check.keyEquivalentModifierMask = [.command, .shift]
@@ -645,12 +562,9 @@ final class OpexApp: NSObject, NSApplicationDelegate, NSTextViewDelegate,
         • Execute runs scripts with the bundled Lua interpreter.
         • Scripts in the autoexec/ folder run automatically at launch.
         • Open Roblox launches the Roblox app.
-        • Inject to Roblox sends scripts to the running Roblox client.
         """
         a.runModal()
     }
-
-    // ---------- Window / UI ----------
 
     func buildWindow() {
         window = NSWindow(contentRect: NSRect(x: 0, y: 0, width: 1100, height: 700),
@@ -665,7 +579,6 @@ final class OpexApp: NSObject, NSApplicationDelegate, NSTextViewDelegate,
         content.wantsLayer = true
         content.layer?.backgroundColor = Theme.bg.cgColor
 
-        // ===== Toolbar =====
         let toolbar = solidView(Theme.bg)
         content.addSubview(toolbar)
         toolbar.translatesAutoresizingMaskIntoConstraints = false
@@ -678,8 +591,6 @@ final class OpexApp: NSObject, NSApplicationDelegate, NSTextViewDelegate,
 
         let btnExecute = PillButton(title: "▶  Execute", base: Theme.accent, textColor: .white,
                                     target: self, action: #selector(execute), tooltip: "Run the current script (⌘R)")
-        let btnInject = PillButton(title: "⤓ Inject", base: NSColor(srgbRed: 0.67, green: 0.38, blue: 0.82, alpha: 1), textColor: .white,
-                                    target: self, action: #selector(injectToRoblox), tooltip: "Inject to Roblox (⌘I)")
         let btnRoblox  = PillButton(title: "Open Roblox", base: NSColor(srgbRed: 0.13, green: 0.45, blue: 0.26, alpha: 1), textColor: .white,
                                     target: self, action: #selector(openRoblox), tooltip: "Launch the Roblox app (⌘O)")
         let btnAuto    = PillButton(title: "⚡ Autoexec", base: NSColor(srgbRed: 0.13, green: 0.15, blue: 0.20, alpha: 1), textColor: Theme.text,
@@ -695,12 +606,11 @@ final class OpexApp: NSObject, NSApplicationDelegate, NSTextViewDelegate,
         let btnLink    = PillButton(title: "Link…", base: NSColor(srgbRed: 0.13, green: 0.15, blue: 0.20, alpha: 1), textColor: Theme.text,
                                     target: self, action: #selector(linkFolder), tooltip: "Link another folder")
 
-        for b in [btnExecute, btnInject, btnRoblox, btnAuto, btnNew, btnSave, btnDelete, btnReveal, btnLink] {
+        for b in [btnExecute, btnRoblox, btnAuto, btnNew, btnSave, btnDelete, btnReveal, btnLink] {
             toolbar.addSubview(b)
             b.translatesAutoresizingMaskIntoConstraints = false
         }
 
-        // ===== Sidebar =====
         let sidebar = solidView(Theme.sidebar)
         content.addSubview(sidebar)
         sidebar.translatesAutoresizingMaskIntoConstraints = false
@@ -750,7 +660,6 @@ final class OpexApp: NSObject, NSApplicationDelegate, NSTextViewDelegate,
         sidebar.addSubview(linkValue)
         linkValue.translatesAutoresizingMaskIntoConstraints = false
 
-        // ===== Editor area =====
         let tabBar = solidView(Theme.editor)
         content.addSubview(tabBar)
         tabBar.translatesAutoresizingMaskIntoConstraints = false
@@ -803,7 +712,6 @@ final class OpexApp: NSObject, NSApplicationDelegate, NSTextViewDelegate,
         editorContainer.addSubview(gutter)
         gutter.translatesAutoresizingMaskIntoConstraints = false
 
-        // ===== Console panel =====
         let consoleWrap = solidView(Theme.panel)
         content.addSubview(consoleWrap)
         consoleWrap.translatesAutoresizingMaskIntoConstraints = false
@@ -839,7 +747,6 @@ final class OpexApp: NSObject, NSApplicationDelegate, NSTextViewDelegate,
         consoleWrap.addSubview(consoleScroll)
         consoleScroll.translatesAutoresizingMaskIntoConstraints = false
 
-        // ===== Status bar =====
         let statusBar = solidView(Theme.bg)
         content.addSubview(statusBar)
         statusBar.translatesAutoresizingMaskIntoConstraints = false
@@ -862,7 +769,6 @@ final class OpexApp: NSObject, NSApplicationDelegate, NSTextViewDelegate,
 
         consoleHeight = consoleWrap.heightAnchor.constraint(equalToConstant: 170)
 
-        // ===== Constraints =====
         NSLayoutConstraint.activate([
             toolbar.topAnchor.constraint(equalTo: content.topAnchor),
             toolbar.leadingAnchor.constraint(equalTo: content.leadingAnchor),
@@ -879,10 +785,8 @@ final class OpexApp: NSObject, NSApplicationDelegate, NSTextViewDelegate,
             btnNew.trailingAnchor.constraint(equalTo: btnSave.leadingAnchor, constant: -8),
             btnAuto.trailingAnchor.constraint(equalTo: btnNew.leadingAnchor, constant: -8),
             btnRoblox.trailingAnchor.constraint(equalTo: btnAuto.leadingAnchor, constant: -8),
-            btnInject.trailingAnchor.constraint(equalTo: btnRoblox.leadingAnchor, constant: -8),
-            btnExecute.trailingAnchor.constraint(equalTo: btnInject.leadingAnchor, constant: -8),
+            btnExecute.trailingAnchor.constraint(equalTo: btnRoblox.leadingAnchor, constant: -8),
             btnExecute.topAnchor.constraint(equalTo: toolbar.topAnchor, constant: 10),
-            btnInject.topAnchor.constraint(equalTo: toolbar.topAnchor, constant: 10),
             btnRoblox.topAnchor.constraint(equalTo: toolbar.topAnchor, constant: 10),
             btnAuto.topAnchor.constraint(equalTo: toolbar.topAnchor, constant: 10),
             btnNew.topAnchor.constraint(equalTo: toolbar.topAnchor, constant: 10),
@@ -997,8 +901,6 @@ final class OpexApp: NSObject, NSApplicationDelegate, NSTextViewDelegate,
         showTab(0)
     }
 
-    // ---------- Actions ----------
-
     @objc func newScript() {
         guard let lp = linkedPath else { askLinkFirst(); return }
         var i = 1
@@ -1053,18 +955,6 @@ final class OpexApp: NSObject, NSApplicationDelegate, NSTextViewDelegate,
             saveLink(p)
             reloadFiles()
             refreshStatus()
-            
-            // Check if Roblox is running and suggest injection
-            if findRobloxPID() != nil {
-                let alert = NSAlert()
-                alert.messageText = "Roblox Detected"
-                alert.informativeText = "Roblox is currently running. Would you like to prepare for script injection?"
-                alert.addButton(withTitle: "Yes")
-                alert.addButton(withTitle: "No")
-                if alert.runModal() == .alertFirstButtonReturn {
-                    log("✓ Ready for script injection. Use 'Inject to Roblox' to send scripts.", Theme.green, bold: true)
-                }
-            }
         }
     }
 
@@ -1098,8 +988,6 @@ final class OpexApp: NSObject, NSApplicationDelegate, NSTextViewDelegate,
         if alert.runModal() == .alertFirstButtonReturn { linkFolder() }
     }
 
-    // ---------- Execute / Inject ----------
-
     @objc func execute() {
         guard let lp = linkedPath, let f = currentFile else {
             log("⚠ No script selected.", Theme.dim, bold: true); return
@@ -1113,8 +1001,6 @@ final class OpexApp: NSObject, NSApplicationDelegate, NSTextViewDelegate,
         }
         log("▶ Executing \(f) …", Theme.accent, bold: true)
 
-        // Write a tiny prelude that pcall-wraps the user script, so any error
-        // (including inside loadstring'd code) is printed to stderr loudly.
         let preludeURL = FileManager.default.temporaryDirectory
             .appendingPathComponent("opex-prelude-\(UUID().uuidString).lua")
         let prelude = """
@@ -1150,29 +1036,6 @@ final class OpexApp: NSObject, NSApplicationDelegate, NSTextViewDelegate,
         }
     }
 
-    @objc func injectToRoblox() {
-        guard let lp = linkedPath, let f = currentFile else {
-            log("⚠ No script selected.", Theme.dim, bold: true); return
-        }
-        
-        // Save the current script
-        let url = URL(fileURLWithPath: lp).appendingPathComponent(f)
-        try? editor.string.write(to: url, atomically: true, encoding: .utf8)
-        
-        // Check if Roblox is running
-        guard findRobloxPID() != nil else {
-            log("✖ Roblox is not running. Please launch Roblox first.", Theme.red, bold: true)
-            return
-        }
-        
-        // Try to inject the script
-        if injectScriptIntoRoblox(editor.string) {
-            log("✓ Script injected to Roblox successfully!", Theme.green, bold: true)
-        } else {
-            log("✖ Failed to inject script. Roblox might not be accessible.", Theme.red, bold: true)
-        }
-    }
-
     @objc func checkProblems() {
         guard let lp = linkedPath, let f = currentFile else { return }
         let url = URL(fileURLWithPath: lp).appendingPathComponent(f)
@@ -1195,8 +1058,6 @@ final class OpexApp: NSObject, NSApplicationDelegate, NSTextViewDelegate,
             self.refreshVisible()
         }
     }
-
-    // ---------- Console helpers ----------
 
     func appendTo(_ attr: NSMutableAttributedString, _ s: String, _ color: NSColor, bold: Bool) {
         attr.append(NSAttributedString(string: s + "\n", attributes: [
@@ -1235,19 +1096,10 @@ final class OpexApp: NSObject, NSApplicationDelegate, NSTextViewDelegate,
         collapseBtn.setGlyph(collapsed ? "▴" : "▾")
     }
 
-    // ---------- Files / status ----------
-
     func refreshStatus() {
         if let lp = linkedPath {
             status.stringValue = "Linked: \(lp)"
             linkValue.stringValue = (lp as NSString).abbreviatingWithTildeInPath
-            
-            // Check if Roblox is running
-            if findRobloxPID() != nil {
-                status.stringValue += " | Roblox: Running"
-            } else {
-                status.stringValue += " | Roblox: Not running"
-            }
         } else {
             status.stringValue = "Not linked — click Link… or run: opex link"
             linkValue.stringValue = "none"
@@ -1305,8 +1157,6 @@ final class OpexApp: NSObject, NSApplicationDelegate, NSTextViewDelegate,
         tabLabel.attributedStringValue = s
     }
 
-    // ---------- Delegates ----------
-
     func controlTextDidChange(_ obj: Notification) { filterFiles() }
 
     func textDidChange(_ notification: Notification) {
@@ -1334,10 +1184,6 @@ final class OpexApp: NSObject, NSApplicationDelegate, NSTextViewDelegate,
 
     func tableViewSelectionDidChange(_ notification: Notification) { loadSelected() }
 }
-
-// ============================================================
-//  CLI
-// ============================================================
 
 func printHelp() {
     print("""
@@ -1422,10 +1268,6 @@ func handleCLI() -> Bool {
     return true
 }
 
-// ============================================================
-//  Entry point
-// ============================================================
-
 if handleCLI() { exit(0) }
 
 let app = NSApplication.shared
@@ -1437,9 +1279,6 @@ SWIFT_EOF
 
 set_progress 22
 
-# ----------------------------------------------------------
-# Step 3: Info.plist
-# ----------------------------------------------------------
 step_msg "${YELLOW}[*] Step 3/6 — Creating app bundle...${NC}"
 cat > "$SCRIPT_DIR/src/Info.plist" <<'PLIST_EOF'
 <?xml version="1.0" encoding="UTF-8"?>
@@ -1461,9 +1300,6 @@ cat > "$SCRIPT_DIR/src/Info.plist" <<'PLIST_EOF'
 PLIST_EOF
 set_progress 28
 
-# ----------------------------------------------------------
-# Step 4: Build app (live # progress bar)
-# ----------------------------------------------------------
 step_msg "${YELLOW}[*] Step 4/6 — Building Opex-MacOS...${NC}"
 mkdir -p "$BUILD_DIR"
 
@@ -1502,13 +1338,9 @@ cp "$SCRIPT_DIR/src/Info.plist" "$APP_PATH/Contents/Info.plist"
 codesign --force -s - "$APP_PATH" 2>/dev/null || true
 set_progress 90
 
-# ----------------------------------------------------------
-# Step 5: Compile bundled Lua 5.4 + install shim (NO BREW NEEDED)
-# ----------------------------------------------------------
 step_msg "${YELLOW}[*] Step 5/6 — Building bundled Lua interpreter (no brew needed)...${NC}"
 mkdir -p "$OPEX_SUPPORT/bin"
 
-# Rebuild if any of the three pieces are missing (upgrades old installs too).
 if [ -x "$OPEX_SUPPORT/bin/lua" ] \
    && [ -x "$OPEX_SUPPORT/bin/lua-bin" ] \
    && [ -f "$OPEX_SUPPORT/bin/shim.lua" ] \
@@ -1521,7 +1353,6 @@ else
     curl -fsSL --max-time 60 -o "$LUA_TGZ" "https://www.lua.org/ftp/lua-5.4.6.tar.gz" || LUA_OK=0
     if [ "$LUA_OK" = "1" ]; then tar -xzf "$LUA_TGZ" -C "$BUILD_DIR" || LUA_OK=0; fi
 
-    # Build without readline (Xcode CLT has no readline; `make macosx` fails on clean Macs).
     if [ "$LUA_OK" = "1" ] && [ -d "$LUA_SRC" ]; then
         ( cd "$LUA_SRC" && make all \
             SYSCFLAGS="-DLUA_USE_MACOSX" \
@@ -1530,19 +1361,12 @@ else
     fi
 
     if [ "$LUA_OK" = "1" ] && [ -x "$LUA_SRC/src/lua" ] && [ -x "$LUA_SRC/src/luac" ]; then
-        # Real binaries live under *-bin / luac. `lua` becomes a wrapper.
         cp "$LUA_SRC/src/lua"  "$OPEX_SUPPORT/bin/lua-bin"
         cp "$LUA_SRC/src/luac" "$OPEX_SUPPORT/bin/luac"
         chmod +x "$OPEX_SUPPORT/bin/lua-bin" "$OPEX_SUPPORT/bin/luac"
 
-        # ---- shim.lua: executor-style globals on top of vanilla Lua ----
         cat > "$OPEX_SUPPORT/bin/shim.lua" <<'SHIM_LUA_EOF'
 -- Opex-MacOS Lua shim
--- Adds executor-style globals to vanilla Lua 5.4 so lines like
---   loadstring(game:HttpGet("https://.../x.lua"))()
--- run without modification.
-
--- loadstring (removed in Lua 5.2+, aliased to load)
 if type(loadstring) ~= "function" then
     loadstring = function(chunk, chunkname)
         if type(chunk) ~= "string" then
@@ -1552,12 +1376,10 @@ if type(loadstring) ~= "function" then
     end
 end
 
--- Shell single-quote escape (safe for URLs and arbitrary strings)
 local function shell_quote(s)
     return "'" .. tostring(s):gsub("'", "'\\''") .. "'"
 end
 
--- HTTP via curl (built into macOS)
 local function http_get(url)
     if type(url) ~= "string" or url == "" then
         return nil, "invalid url"
@@ -1566,7 +1388,6 @@ local function http_get(url)
     local p = io.popen(cmd, "r")
     if not p then return nil, "could not spawn curl" end
     local body = p:read("*a")
-    -- Lua 5.4: close() returns true/nil,"exit",code/nil,"signal",code
     local ok = p:close()
     if not ok then return nil, "curl failed" end
     if body == nil or body == "" then
@@ -1575,12 +1396,10 @@ local function http_get(url)
     return body
 end
 
--- game:HttpGet / game:HttpGetAsync
 if type(game) ~= "table" then game = {} end
 function game:HttpGet(url)      return http_get(url) end
 function game:HttpGetAsync(url) return http_get(url) end
 
--- request() / http_request() aliases (used by some loaders)
 local function request_impl(t)
     if type(t) == "table" and type(t.Url) == "string" then
         local body = http_get(t.Url)
@@ -1595,7 +1414,6 @@ request      = request_impl
 http_request = request_impl
 SHIM_LUA_EOF
 
-        # ---- wrapper: every `lua` call preloads the shim via LUA_INIT ----
         cat > "$OPEX_SUPPORT/bin/lua" <<'WRAP_EOF'
 #!/bin/bash
 DIR="$(cd "$(dirname "$0")" && pwd)"
@@ -1604,17 +1422,14 @@ exec "$DIR/lua-bin" "$@"
 WRAP_EOF
         chmod +x "$OPEX_SUPPORT/bin/lua"
 
-        step_msg "${GREEN}[✔] Lua 5.4.6 + shim installed — loadstring(game:HttpGet(...))() now works.${NC}"
+        step_msg "${GREEN}[✔] Lua 5.4.6 + shim installed.${NC}"
     else
         printf "\r\033[K"
-        step_msg "${YELLOW}[!] Could not download/build Lua (offline?). Execute needs: brew install lua${NC}"
+        step_msg "${YELLOW}[!] Could not download/build Lua (offline?).${NC}"
     fi
 fi
 set_progress 96
 
-# ----------------------------------------------------------
-# Step 6: CLI install
-# ----------------------------------------------------------
 step_msg "${YELLOW}[*] Step 6/6 — Installing CLI tool...${NC}"
 BIN_DIR=""
 for dir in "$HOME/.local/bin" "$HOME/bin" "/usr/local/bin"; do
@@ -1635,46 +1450,6 @@ else
 fi
 set_progress 98
 
-cat > "$SCRIPT_DIR/README.md" <<'README_EOF'
-# Opex-MacOS
-
-Dark IDE-style Lua script workspace for macOS. Bundles its own Lua interpreter —
-Execute works out of the box, no Homebrew needed.
-
-## Install
-bash -c "$(curl -fsSL https://raw.githubusercontent.com/Opex-Hub/macos-executor/refs/heads/main/opex)"
-
-## Features
-- ▶ Execute — runs the current script with the bundled Lua + shim
-- ⤓ Inject to Roblox — sends scripts to the running Roblox client
-- ⚡ Autoexec — scripts in the autoexec/ folder run automatically at launch
-- Open Roblox — launches the Roblox app
-- Syntax highlighting, line numbers, console, PROBLEMS tab (syntax check)
-
-## Shim
-Vanilla Lua 5.4 has no loadstring and no game:HttpGet, so the bundled
-interpreter is wrapped:
-
-  bin/lua-bin   real Lua 5.4.6 binary
-  bin/shim.lua  defines loadstring, game:HttpGet, request
-  bin/lua       wrapper that sets LUA_INIT=@shim.lua then execs lua-bin
-
-This makes the executor idiom work as-is:
-
-  loadstring(game:HttpGet("https://raw.githubusercontent.com/.../x.lua"))()
-
-It does NOT give you a Roblox VM — no Instance, GetService, Players, etc.
-
-## CLI
-opex                  # open the app
-opex run script.lua   # execute a script
-opex autoexec on|off  # toggle auto-execute
-opex list             # list scripts
-README_EOF
-
-# ----------------------------------------------------------
-# Done
-# ----------------------------------------------------------
 set_progress 100
 echo ""
 echo ""
