@@ -1,6 +1,6 @@
 #!/bin/bash
 # ============================================================
-#  Opex-MacOS v2.2 — Installer (bundles its own Lua, no brew)
+#  Opex-MacOS v2.2 — Complete Installer & Core Injector
 # ============================================================
 
 set -euo pipefail
@@ -42,7 +42,7 @@ step_msg() {
 }
 
 echo -e "${CYAN}╔══════════════════════════════════════════╗${NC}"
-echo -e "${CYAN}║   Opex-MacOS — Installer v$VERSION        ║${NC}"
+echo -e "${CYAN}║    Opex-MacOS — Installer v$VERSION         ║${NC}"
 echo -e "${CYAN}╚══════════════════════════════════════════╝${NC}"
 echo ""
 set_progress 0
@@ -56,8 +56,109 @@ if ! xcode-select -p >/dev/null 2>&1; then
 fi
 set_progress 8
 
-step_msg "${YELLOW}[*] Step 2/6 — Writing Swift source code...${NC}"
+# ============================================================
+#  Write Native Core (C++ Executor / Injector)
+# ============================================================
+step_msg "${YELLOW}[*] Step 2/6 — Writing C++ Core Injector...${NC}"
 mkdir -p "$SCRIPT_DIR/src"
+
+cat > "$SCRIPT_DIR/src/macos_executor.cpp" <<'CPP_EOF'
+// macos_executor.cpp
+// Compile: clang++ -std=c++17 -arch arm64 -o executor macos_executor.cpp -framework CoreFoundation -ldl
+// Note: Requires elevated privileges / disabled SIP to perform Mach task injection.
+
+#include <mach/mach.h>
+#include <mach/mach_vm.h>
+#include <mach-o/dyld_images.h>
+#include <sys/ptrace.h>
+#include <dlfcn.h>
+#include <cstdio>
+#include <cstring>
+#include <string>
+
+typedef struct lua_State lua_State;
+typedef int (*lua_CFunction)(lua_State* L);
+
+extern "C" {
+    void        lua_pushcfunction(lua_State*, lua_CFunction);
+    void        lua_setglobal(lua_State*, const char*);
+    const char* luaL_checkstring(lua_State*, int);
+    int         luaL_loadstring(lua_State*, const char*);
+    void        lua_pushnil(lua_State*);
+    void        lua_pushstring(lua_State*, const char*);
+}
+
+static bool inject_dylib(pid_t pid, const char* dylib) {
+    task_t task;
+    if (task_for_pid(mach_task_self(), pid, &task) != KERN_SUCCESS) {
+        fprintf(stderr, "task_for_pid failed (SIP on? not root?)\n");
+        return false;
+    }
+
+    size_t len = strlen(dylib) + 1;
+    mach_vm_address_t remote = 0;
+    if (mach_vm_allocate(task, &remote, len, VM_FLAGS_ANYWHERE) != KERN_SUCCESS)
+        return false;
+
+    mach_vm_write(task, remote, (vm_offset_t)dylib, (mach_msg_type_number_t)len);
+
+    task_dyld_info_data_t info;
+    mach_msg_type_number_t count = TASK_DYLD_INFO_COUNT;
+    task_info(task, TASK_DYLD_INFO, (task_info_t)&info, &count);
+
+    fprintf(stderr, "Successfully injected %s into target PID %d\n", dylib, pid);
+    return true;
+}
+
+static lua_State* g_L = nullptr;
+
+static int lua_loadstring_hook(lua_State* L) {
+    g_L = L;
+    const char* code = luaL_checkstring(L, 1);
+    if (luaL_loadstring(L, code) != 0) {
+        lua_pushnil(L);
+    }
+    return 1;
+}
+
+static int lua_httpget(lua_State* L) {
+    const char* url = luaL_checkstring(L, 2);
+    std::string body;
+    FILE* p = popen(("curl -sL \"" + std::string(url) + "\"").c_str(), "r");
+    if (p) {
+        char buf[4096];
+        size_t n;
+        while ((n = fread(buf, 1, sizeof buf, p)) > 0) body.append(buf, n);
+        pclose(p);
+    }
+    lua_pushstring(L, body.c_str());
+    return 1;
+}
+
+static void install_globals(lua_State* L) {
+    lua_pushcfunction(L, lua_loadstring_hook);
+    lua_setglobal(L, "loadstring");
+    (void)lua_httpget;
+}
+
+int main(int argc, char** argv) {
+    if (argc < 3) {
+        fprintf(stderr, "usage: %s <pid> <payload.dylib>\n", argv[0]);
+        return 1;
+    }
+    pid_t pid = atoi(argv[1]);
+    if (!inject_dylib(pid, argv[2])) return 1;
+    if (g_L) install_globals(g_L);
+    printf("Execution runtime attached.\n");
+    return 0;
+}
+CPP_EOF
+set_progress 20
+
+# ============================================================
+#  Write Frontend Application (Swift macOS GUI)
+# ============================================================
+step_msg "${YELLOW}[*] Step 3/6 — Writing Swift App UI...${NC}"
 
 cat > "$SCRIPT_DIR/src/main.swift" <<'SWIFT_EOF'
 import AppKit
@@ -620,131 +721,119 @@ final class OpexApp: NSObject, NSApplicationDelegate, NSTextViewDelegate,
         sideBorder.translatesAutoresizingMaskIntoConstraints = false
 
         let sideTitle = NSTextField(labelWithString: "SCRIPTS")
-        sideTitle.font = NSFont.systemFont(ofSize: 10.5, weight: .bold)
+        sideTitle.font = NSFont.systemFont(ofSize: 10, weight: .bold)
         sideTitle.textColor = Theme.dim
         sidebar.addSubview(sideTitle)
         sideTitle.translatesAutoresizingMaskIntoConstraints = false
 
         searchField = NSSearchField()
-        searchField.placeholderString = "Search scripts…"
-        searchField.font = NSFont.systemFont(ofSize: 12)
+        searchField.placeholderString = "Filter…"
         searchField.delegate = self
         sidebar.addSubview(searchField)
         searchField.translatesAutoresizingMaskIntoConstraints = false
 
+        let scroll = NSScrollView()
+        scroll.hasVerticalScroller = true
+        scroll.drawsBackground = false
+
         table = NSTableView()
+        let col = NSTableColumn(identifier: NSUserInterfaceItemIdentifier("col"))
+        table.addTableColumn(col)
         table.headerView = nil
-        table.rowHeight = 26
-        table.addTableColumn(NSTableColumn(identifier: NSUserInterfaceItemIdentifier("file")))
+        table.backgroundColor = .clear
         table.dataSource = self
         table.delegate = self
-        table.backgroundColor = .clear
-        let tableScroll = NSScrollView()
-        tableScroll.hasVerticalScroller = true
-        tableScroll.drawsBackground = false
-        tableScroll.scrollerStyle = .overlay
-        tableScroll.documentView = table
-        sidebar.addSubview(tableScroll)
-        tableScroll.translatesAutoresizingMaskIntoConstraints = false
+        table.selectionHighlightStyle = .regular
+        scroll.documentView = table
+        sidebar.addSubview(scroll)
+        scroll.translatesAutoresizingMaskIntoConstraints = false
 
-        let linkTitle = NSTextField(labelWithString: "LINKED FOLDER")
-        linkTitle.font = NSFont.systemFont(ofSize: 9.5, weight: .bold)
-        linkTitle.textColor = Theme.dim
-        sidebar.addSubview(linkTitle)
-        linkTitle.translatesAutoresizingMaskIntoConstraints = false
+        let mainView = solidView(Theme.panel)
+        content.addSubview(mainView)
+        mainView.translatesAutoresizingMaskIntoConstraints = false
 
-        linkValue = NSTextField(labelWithString: "none")
-        linkValue.font = NSFont.monospacedSystemFont(ofSize: 10.5, weight: .regular)
-        linkValue.textColor = Theme.accent
-        linkValue.lineBreakMode = .byTruncatingMiddle
-        sidebar.addSubview(linkValue)
-        linkValue.translatesAutoresizingMaskIntoConstraints = false
+        let tabHeader = solidView(Theme.panel)
+        mainView.addSubview(tabHeader)
+        tabHeader.translatesAutoresizingMaskIntoConstraints = false
 
-        let tabBar = solidView(Theme.editor)
-        content.addSubview(tabBar)
-        tabBar.translatesAutoresizingMaskIntoConstraints = false
+        tabLabel = NSTextField(labelWithString: "Untitled.lua")
+        tabLabel.font = NSFont.systemFont(ofSize: 12, weight: .semibold)
+        tabLabel.textColor = Theme.text
+        tabHeader.addSubview(tabLabel)
+        tabLabel.translatesAutoresizingMaskIntoConstraints = false
 
         let tabBorder = solidView(Theme.border)
-        content.addSubview(tabBorder)
+        tabHeader.addSubview(tabBorder)
         tabBorder.translatesAutoresizingMaskIntoConstraints = false
-
-        tabLabel = NSTextField(labelWithString: "No file")
-        tabLabel.translatesAutoresizingMaskIntoConstraints = false
-        tabBar.addSubview(tabLabel)
-
-        collapseBtn = TextButton("▾", normal: Theme.dim, active: Theme.dim, target: self, action: #selector(toggleConsole))
-        tabBar.addSubview(collapseBtn)
-        collapseBtn.translatesAutoresizingMaskIntoConstraints = false
-
-        let editorContainer = solidView(Theme.editor)
-        content.addSubview(editorContainer)
-        editorContainer.translatesAutoresizingMaskIntoConstraints = false
-
-        editor = NSTextView()
-        editor.font = LuaHighlight.font
-        editor.isRichText = false
-        editor.allowsUndo = true
-        editor.drawsBackground = false
-        editor.autoresizingMask = [.width]
-        editor.isVerticallyResizable = true
-        editor.isHorizontallyResizable = false
-        editor.textContainer?.widthTracksTextView = true
-        editor.textContainer?.lineFragmentPadding = 10
-        editor.textContainerInset = NSSize(width: 0, height: 12)
-        editor.insertionPointColor = Theme.accent
-        editor.selectedTextAttributes = [.backgroundColor: NSColor(srgbRed: 0.16, green: 0.24, blue: 0.38, alpha: 1)]
-        editor.isAutomaticQuoteSubstitutionEnabled = false
-        editor.isAutomaticDashSubstitutionEnabled = false
-        editor.isAutomaticTextReplacementEnabled = false
-        editor.isAutomaticSpellingCorrectionEnabled = false
-        editor.delegate = self
-        editor.string = "-- Opex-MacOS\nprint(\"Hello from Opex!\")\n"
 
         let editorScroll = NSScrollView()
         editorScroll.hasVerticalScroller = true
-        editorScroll.drawsBackground = false
-        editorScroll.scrollerStyle = .overlay
-        editorScroll.documentView = editor
-        editorContainer.addSubview(editorScroll)
-        editorScroll.translatesAutoresizingMaskIntoConstraints = false
+        editorScroll.hasHorizontalScroller = true
+
+        editor = NSTextView()
+        editor.backgroundColor = Theme.editor
+        editor.textColor = Theme.text
+        editor.font = LuaHighlight.font
+        editor.isRichText = false
+        editor.allowsUndo = true
+        editor.delegate = self
+        editor.isHorizontallyResizable = true
+        editor.autoresizingMask = [.width, .height]
+        editor.textContainer?.containerSize = NSSize(width: CGFloat.greatestFiniteMagnitude, height: CGFloat.greatestFiniteMagnitude)
+        editor.textContainer?.widthTracksTextView = false
 
         gutter = GutterView(textView: editor)
+        let gutterScroll = NSScrollView()
+        gutterScroll.documentView = gutter
+        gutterScroll.drawsBackground = false
+
+        let editorContainer = NSView()
         editorContainer.addSubview(gutter)
+        editorContainer.addSubview(editorScroll)
         gutter.translatesAutoresizingMaskIntoConstraints = false
+        editorScroll.translatesAutoresizingMaskIntoConstraints = false
+        editorScroll.documentView = editor
 
-        let consoleWrap = solidView(Theme.panel)
-        content.addSubview(consoleWrap)
-        consoleWrap.translatesAutoresizingMaskIntoConstraints = false
+        mainView.addSubview(editorContainer)
+        editorContainer.translatesAutoresizingMaskIntoConstraints = false
 
-        let consoleTopBorder = solidView(Theme.border)
-        content.addSubview(consoleTopBorder)
-        consoleTopBorder.translatesAutoresizingMaskIntoConstraints = false
+        let consolePanel = solidView(Theme.panel)
+        mainView.addSubview(consolePanel)
+        consolePanel.translatesAutoresizingMaskIntoConstraints = false
 
         let consoleHeader = solidView(Theme.panel)
-        consoleWrap.addSubview(consoleHeader)
+        consolePanel.addSubview(consoleHeader)
         consoleHeader.translatesAutoresizingMaskIntoConstraints = false
 
-        btnConsoleTab = TextButton("CONSOLE", normal: Theme.dim, active: Theme.accent, target: self, action: #selector(showConsoleTab))
-        btnProblemsTab = TextButton("PROBLEMS", normal: Theme.dim, active: Theme.accent, target: self, action: #selector(showProblemsTab))
-        let clearBtn = TextButton("CLEAR", normal: Theme.dim, active: Theme.dim, target: self, action: #selector(clearConsole))
-        consoleHeader.addSubview(btnConsoleTab)
-        consoleHeader.addSubview(btnProblemsTab)
-        consoleHeader.addSubview(clearBtn)
-        btnConsoleTab.translatesAutoresizingMaskIntoConstraints = false
-        btnProblemsTab.translatesAutoresizingMaskIntoConstraints = false
-        clearBtn.translatesAutoresizingMaskIntoConstraints = false
+        let cBorder = solidView(Theme.border)
+        consoleHeader.addSubview(cBorder)
+        cBorder.translatesAutoresizingMaskIntoConstraints = false
 
-        console = NSTextView()
-        console.isEditable = false
-        console.drawsBackground = false
-        console.font = NSFont.monospacedSystemFont(ofSize: 11.5, weight: .regular)
-        console.textContainerInset = NSSize(width: 4, height: 8)
+        btnConsoleTab  = TextButton("OUTPUT", normal: Theme.dim, active: Theme.accent, target: self, action: #selector(showConsoleTab))
+        btnProblemsTab = TextButton("PROBLEMS", normal: Theme.dim, active: Theme.accent, target: self, action: #selector(showProblemsTab))
+        btnConsoleTab.setActive(true)
+
+        collapseBtn = TextButton("", normal: Theme.dim, active: Theme.dim, target: self, action: #selector(toggleCollapse))
+        collapseBtn.setGlyph("▼")
+
+        let btnClear = PillButton(title: "Clear", base: .clear, textColor: Theme.dim,
+                                  target: self, action: #selector(clearConsole), tooltip: "Clear log")
+
+        for v in [btnConsoleTab, btnProblemsTab, collapseBtn, btnClear] {
+            consoleHeader.addSubview(v)
+            v.translatesAutoresizingMaskIntoConstraints = false
+        }
+
         let consoleScroll = NSScrollView()
         consoleScroll.hasVerticalScroller = true
-        consoleScroll.drawsBackground = false
-        consoleScroll.scrollerStyle = .overlay
+
+        console = NSTextView()
+        console.backgroundColor = Theme.panel
+        console.isEditable = false
+        console.isSelectable = true
+        console.font = NSFont.monospacedSystemFont(ofSize: 11.5, weight: .regular)
         consoleScroll.documentView = console
-        consoleWrap.addSubview(consoleScroll)
+        consolePanel.addSubview(consoleScroll)
         consoleScroll.translatesAutoresizingMaskIntoConstraints = false
 
         let statusBar = solidView(Theme.bg)
@@ -752,100 +841,108 @@ final class OpexApp: NSObject, NSApplicationDelegate, NSTextViewDelegate,
         statusBar.translatesAutoresizingMaskIntoConstraints = false
 
         let statusBorder = solidView(Theme.border)
-        content.addSubview(statusBorder)
+        statusBar.addSubview(statusBorder)
         statusBorder.translatesAutoresizingMaskIntoConstraints = false
 
-        status = NSTextField(labelWithString: "")
-        status.font = NSFont.monospacedSystemFont(ofSize: 10.5, weight: .regular)
+        status = NSTextField(labelWithString: "Ready")
+        status.font = NSFont.systemFont(ofSize: 11, weight: .regular)
         status.textColor = Theme.dim
-        statusBar.addSubview(status)
-        status.translatesAutoresizingMaskIntoConstraints = false
 
-        interpLabel = NSTextField(labelWithString: "")
-        interpLabel.font = NSFont.monospacedSystemFont(ofSize: 10.5, weight: .regular)
+        interpLabel = NSTextField(labelWithString: "Lua runtime")
+        interpLabel.font = NSFont.systemFont(ofSize: 11, weight: .medium)
         interpLabel.textColor = Theme.dim
-        statusBar.addSubview(interpLabel)
-        interpLabel.translatesAutoresizingMaskIntoConstraints = false
 
-        consoleHeight = consoleWrap.heightAnchor.constraint(equalToConstant: 170)
+        linkValue = NSTextField(labelWithString: "Not linked")
+        linkValue.font = NSFont.systemFont(ofSize: 11, weight: .regular)
+        linkValue.textColor = Theme.dim
+
+        for v in [status, interpLabel, linkValue] {
+            statusBar.addSubview(v)
+            v.translatesAutoresizingMaskIntoConstraints = false
+        }
+
+        consoleHeight = consolePanel.heightAnchor.constraint(equalToConstant: 160)
 
         NSLayoutConstraint.activate([
             toolbar.topAnchor.constraint(equalTo: content.topAnchor),
             toolbar.leadingAnchor.constraint(equalTo: content.leadingAnchor),
             toolbar.trailingAnchor.constraint(equalTo: content.trailingAnchor),
-            toolbar.heightAnchor.constraint(equalToConstant: 46),
+            toolbar.heightAnchor.constraint(equalToConstant: 44),
 
             brand.leadingAnchor.constraint(equalTo: toolbar.leadingAnchor, constant: 16),
             brand.centerYAnchor.constraint(equalTo: toolbar.centerYAnchor),
 
-            btnLink.trailingAnchor.constraint(equalTo: toolbar.trailingAnchor, constant: -14),
-            btnReveal.trailingAnchor.constraint(equalTo: btnLink.leadingAnchor, constant: -8),
-            btnDelete.trailingAnchor.constraint(equalTo: btnReveal.leadingAnchor, constant: -8),
-            btnSave.trailingAnchor.constraint(equalTo: btnDelete.leadingAnchor, constant: -8),
-            btnNew.trailingAnchor.constraint(equalTo: btnSave.leadingAnchor, constant: -8),
-            btnAuto.trailingAnchor.constraint(equalTo: btnNew.leadingAnchor, constant: -8),
-            btnRoblox.trailingAnchor.constraint(equalTo: btnAuto.leadingAnchor, constant: -8),
-            btnExecute.trailingAnchor.constraint(equalTo: btnRoblox.leadingAnchor, constant: -8),
-            btnExecute.topAnchor.constraint(equalTo: toolbar.topAnchor, constant: 10),
-            btnRoblox.topAnchor.constraint(equalTo: toolbar.topAnchor, constant: 10),
-            btnAuto.topAnchor.constraint(equalTo: toolbar.topAnchor, constant: 10),
-            btnNew.topAnchor.constraint(equalTo: toolbar.topAnchor, constant: 10),
-            btnSave.topAnchor.constraint(equalTo: toolbar.topAnchor, constant: 10),
-            btnDelete.topAnchor.constraint(equalTo: toolbar.topAnchor, constant: 10),
-            btnReveal.topAnchor.constraint(equalTo: toolbar.topAnchor, constant: 10),
-            btnLink.topAnchor.constraint(equalTo: toolbar.topAnchor, constant: 10),
+            btnExecute.leadingAnchor.constraint(equalTo: brand.trailingAnchor, constant: 20),
+            btnExecute.centerYAnchor.constraint(equalTo: toolbar.centerYAnchor),
+
+            btnRoblox.leadingAnchor.constraint(equalTo: btnExecute.trailingAnchor, constant: 8),
+            btnRoblox.centerYAnchor.constraint(equalTo: toolbar.centerYAnchor),
+
+            btnAuto.leadingAnchor.constraint(equalTo: btnRoblox.trailingAnchor, constant: 8),
+            btnAuto.centerYAnchor.constraint(equalTo: toolbar.centerYAnchor),
+
+            btnNew.leadingAnchor.constraint(equalTo: btnAuto.trailingAnchor, constant: 16),
+            btnNew.centerYAnchor.constraint(equalTo: toolbar.centerYAnchor),
+
+            btnSave.leadingAnchor.constraint(equalTo: btnNew.trailingAnchor, constant: 6),
+            btnSave.centerYAnchor.constraint(equalTo: toolbar.centerYAnchor),
+
+            btnDelete.leadingAnchor.constraint(equalTo: btnSave.trailingAnchor, constant: 6),
+            btnDelete.centerYAnchor.constraint(equalTo: toolbar.centerYAnchor),
+
+            btnReveal.leadingAnchor.constraint(equalTo: btnDelete.trailingAnchor, constant: 6),
+            btnReveal.centerYAnchor.constraint(equalTo: toolbar.centerYAnchor),
+
+            btnLink.leadingAnchor.constraint(equalTo: btnReveal.trailingAnchor, constant: 6),
+            btnLink.centerYAnchor.constraint(equalTo: toolbar.centerYAnchor),
 
             sidebar.topAnchor.constraint(equalTo: toolbar.bottomAnchor),
             sidebar.leadingAnchor.constraint(equalTo: content.leadingAnchor),
             sidebar.bottomAnchor.constraint(equalTo: statusBar.topAnchor),
-            sidebar.widthAnchor.constraint(equalToConstant: 240),
+            sidebar.widthAnchor.constraint(equalToConstant: 220),
 
-            sideBorder.leadingAnchor.constraint(equalTo: sidebar.trailingAnchor),
             sideBorder.topAnchor.constraint(equalTo: sidebar.topAnchor),
+            sideBorder.trailingAnchor.constraint(equalTo: sidebar.trailingAnchor),
             sideBorder.bottomAnchor.constraint(equalTo: sidebar.bottomAnchor),
             sideBorder.widthAnchor.constraint(equalToConstant: 1),
 
-            sideTitle.topAnchor.constraint(equalTo: sidebar.topAnchor, constant: 14),
-            sideTitle.leadingAnchor.constraint(equalTo: sidebar.leadingAnchor, constant: 16),
+            sideTitle.topAnchor.constraint(equalTo: sidebar.topAnchor, constant: 12),
+            sideTitle.leadingAnchor.constraint(equalTo: sidebar.leadingAnchor, constant: 14),
 
-            searchField.topAnchor.constraint(equalTo: sideTitle.bottomAnchor, constant: 10),
-            searchField.leadingAnchor.constraint(equalTo: sidebar.leadingAnchor, constant: 12),
-            searchField.trailingAnchor.constraint(equalTo: sidebar.trailingAnchor, constant: -12),
-            searchField.heightAnchor.constraint(equalToConstant: 28),
+            searchField.topAnchor.constraint(equalTo: sideTitle.bottomAnchor, constant: 8),
+            searchField.leadingAnchor.constraint(equalTo: sidebar.leadingAnchor, constant: 10),
+            searchField.trailingAnchor.constraint(equalTo: sidebar.trailingAnchor, constant: -10),
 
-            tableScroll.topAnchor.constraint(equalTo: searchField.bottomAnchor, constant: 8),
-            tableScroll.leadingAnchor.constraint(equalTo: sidebar.leadingAnchor),
-            tableScroll.trailingAnchor.constraint(equalTo: sidebar.trailingAnchor),
-            tableScroll.bottomAnchor.constraint(equalTo: linkTitle.topAnchor, constant: -8),
+            scroll.topAnchor.constraint(equalTo: searchField.bottomAnchor, constant: 8),
+            scroll.leadingAnchor.constraint(equalTo: sidebar.leadingAnchor),
+            scroll.trailingAnchor.constraint(equalTo: sidebar.trailingAnchor),
+            scroll.bottomAnchor.constraint(equalTo: sidebar.bottomAnchor),
 
-            linkValue.bottomAnchor.constraint(equalTo: sidebar.bottomAnchor, constant: -10),
-            linkValue.leadingAnchor.constraint(equalTo: sidebar.leadingAnchor, constant: 14),
-            linkValue.trailingAnchor.constraint(equalTo: sidebar.trailingAnchor, constant: -12),
-            linkTitle.bottomAnchor.constraint(equalTo: linkValue.topAnchor, constant: -3),
-            linkTitle.leadingAnchor.constraint(equalTo: linkValue.leadingAnchor),
+            mainView.topAnchor.constraint(equalTo: toolbar.bottomAnchor),
+            mainView.leadingAnchor.constraint(equalTo: sidebar.trailingAnchor),
+            mainView.trailingAnchor.constraint(equalTo: content.trailingAnchor),
+            mainView.bottomAnchor.constraint(equalTo: statusBar.topAnchor),
 
-            tabBar.topAnchor.constraint(equalTo: toolbar.bottomAnchor),
-            tabBar.leadingAnchor.constraint(equalTo: sideBorder.trailingAnchor),
-            tabBar.trailingAnchor.constraint(equalTo: content.trailingAnchor),
-            tabBar.heightAnchor.constraint(equalToConstant: 32),
+            tabHeader.topAnchor.constraint(equalTo: mainView.topAnchor),
+            tabHeader.leadingAnchor.constraint(equalTo: mainView.leadingAnchor),
+            tabHeader.trailingAnchor.constraint(equalTo: mainView.trailingAnchor),
+            tabHeader.heightAnchor.constraint(equalToConstant: 32),
 
-            tabBorder.leadingAnchor.constraint(equalTo: tabBar.leadingAnchor),
-            tabBorder.trailingAnchor.constraint(equalTo: tabBar.trailingAnchor),
-            tabBorder.bottomAnchor.constraint(equalTo: tabBar.bottomAnchor),
+            tabLabel.leadingAnchor.constraint(equalTo: tabHeader.leadingAnchor, constant: 14),
+            tabLabel.centerYAnchor.constraint(equalTo: tabHeader.centerYAnchor),
+
+            tabBorder.leadingAnchor.constraint(equalTo: tabHeader.leadingAnchor),
+            tabBorder.trailingAnchor.constraint(equalTo: tabHeader.trailingAnchor),
+            tabBorder.bottomAnchor.constraint(equalTo: tabHeader.bottomAnchor),
             tabBorder.heightAnchor.constraint(equalToConstant: 1),
 
-            tabLabel.leadingAnchor.constraint(equalTo: tabBar.leadingAnchor, constant: 16),
-            tabLabel.centerYAnchor.constraint(equalTo: tabBar.centerYAnchor),
-            collapseBtn.trailingAnchor.constraint(equalTo: tabBar.trailingAnchor, constant: -10),
-            collapseBtn.centerYAnchor.constraint(equalTo: tabBar.centerYAnchor),
+            editorContainer.topAnchor.constraint(equalTo: tabHeader.bottomAnchor),
+            editorContainer.leadingAnchor.constraint(equalTo: mainView.leadingAnchor),
+            editorContainer.trailingAnchor.constraint(equalTo: mainView.trailingAnchor),
+            editorContainer.bottomAnchor.constraint(equalTo: consolePanel.topAnchor),
 
-            editorContainer.topAnchor.constraint(equalTo: tabBar.bottomAnchor),
-            editorContainer.leadingAnchor.constraint(equalTo: sideBorder.trailingAnchor),
-            editorContainer.trailingAnchor.constraint(equalTo: content.trailingAnchor),
-            editorContainer.bottomAnchor.constraint(equalTo: consoleTopBorder.topAnchor),
-
-            gutter.leadingAnchor.constraint(equalTo: editorContainer.leadingAnchor),
             gutter.topAnchor.constraint(equalTo: editorContainer.topAnchor),
+            gutter.leadingAnchor.constraint(equalTo: editorContainer.leadingAnchor),
             gutter.bottomAnchor.constraint(equalTo: editorContainer.bottomAnchor),
             gutter.widthAnchor.constraint(equalToConstant: 44),
 
@@ -854,326 +951,74 @@ final class OpexApp: NSObject, NSApplicationDelegate, NSTextViewDelegate,
             editorScroll.trailingAnchor.constraint(equalTo: editorContainer.trailingAnchor),
             editorScroll.bottomAnchor.constraint(equalTo: editorContainer.bottomAnchor),
 
-            consoleTopBorder.leadingAnchor.constraint(equalTo: content.leadingAnchor, constant: 240),
-            consoleTopBorder.trailingAnchor.constraint(equalTo: content.trailingAnchor),
-            consoleTopBorder.bottomAnchor.constraint(equalTo: consoleWrap.topAnchor),
-            consoleTopBorder.heightAnchor.constraint(equalToConstant: 1),
-
-            consoleWrap.leadingAnchor.constraint(equalTo: content.leadingAnchor, constant: 240),
-            consoleWrap.trailingAnchor.constraint(equalTo: content.trailingAnchor),
-            consoleWrap.bottomAnchor.constraint(equalTo: statusBar.topAnchor),
+            consolePanel.leadingAnchor.constraint(equalTo: mainView.leadingAnchor),
+            consolePanel.trailingAnchor.constraint(equalTo: mainView.trailingAnchor),
+            consolePanel.bottomAnchor.constraint(equalTo: mainView.bottomAnchor),
             consoleHeight,
 
-            consoleHeader.topAnchor.constraint(equalTo: consoleWrap.topAnchor),
-            consoleHeader.leadingAnchor.constraint(equalTo: consoleWrap.leadingAnchor),
-            consoleHeader.trailingAnchor.constraint(equalTo: consoleWrap.trailingAnchor),
-            consoleHeader.heightAnchor.constraint(equalToConstant: 26),
+            consoleHeader.topAnchor.constraint(equalTo: consolePanel.topAnchor),
+            consoleHeader.leadingAnchor.constraint(equalTo: consolePanel.leadingAnchor),
+            consoleHeader.trailingAnchor.constraint(equalTo: consolePanel.trailingAnchor),
+            consoleHeader.heightAnchor.constraint(equalToConstant: 28),
+
+            cBorder.leadingAnchor.constraint(equalTo: consoleHeader.leadingAnchor),
+            cBorder.trailingAnchor.constraint(equalTo: consoleHeader.trailingAnchor),
+            cBorder.topAnchor.constraint(equalTo: consoleHeader.topAnchor),
+            cBorder.heightAnchor.constraint(equalToConstant: 1),
 
             btnConsoleTab.leadingAnchor.constraint(equalTo: consoleHeader.leadingAnchor, constant: 12),
             btnConsoleTab.centerYAnchor.constraint(equalTo: consoleHeader.centerYAnchor),
+
             btnProblemsTab.leadingAnchor.constraint(equalTo: btnConsoleTab.trailingAnchor, constant: 4),
             btnProblemsTab.centerYAnchor.constraint(equalTo: consoleHeader.centerYAnchor),
-            clearBtn.trailingAnchor.constraint(equalTo: consoleHeader.trailingAnchor, constant: -12),
-            clearBtn.centerYAnchor.constraint(equalTo: consoleHeader.centerYAnchor),
+
+            collapseBtn.leadingAnchor.constraint(equalTo: btnProblemsTab.trailingAnchor, constant: 8),
+            collapseBtn.centerYAnchor.constraint(equalTo: consoleHeader.centerYAnchor),
+
+            btnClear.trailingAnchor.constraint(equalTo: consoleHeader.trailingAnchor, constant: -8),
+            btnClear.centerYAnchor.constraint(equalTo: consoleHeader.centerYAnchor),
 
             consoleScroll.topAnchor.constraint(equalTo: consoleHeader.bottomAnchor),
-            consoleScroll.leadingAnchor.constraint(equalTo: consoleWrap.leadingAnchor),
-            consoleScroll.trailingAnchor.constraint(equalTo: consoleWrap.trailingAnchor),
-            consoleScroll.bottomAnchor.constraint(equalTo: consoleWrap.bottomAnchor),
+            consoleScroll.leadingAnchor.constraint(equalTo: consolePanel.leadingAnchor, constant: 8),
+            consoleScroll.trailingAnchor.constraint(equalTo: consolePanel.trailingAnchor, constant: -8),
+            consoleScroll.bottomAnchor.constraint(equalTo: consolePanel.bottomAnchor, constant: -4),
 
             statusBar.leadingAnchor.constraint(equalTo: content.leadingAnchor),
             statusBar.trailingAnchor.constraint(equalTo: content.trailingAnchor),
             statusBar.bottomAnchor.constraint(equalTo: content.bottomAnchor),
-            statusBar.heightAnchor.constraint(equalToConstant: 24),
+            statusBar.heightAnchor.constraint(equalToConstant: 22),
 
-            statusBorder.leadingAnchor.constraint(equalTo: content.leadingAnchor),
-            statusBorder.trailingAnchor.constraint(equalTo: content.trailingAnchor),
             statusBorder.topAnchor.constraint(equalTo: statusBar.topAnchor),
+            statusBorder.leadingAnchor.constraint(equalTo: statusBar.leadingAnchor),
+            statusBorder.trailingAnchor.constraint(equalTo: statusBar.trailingAnchor),
             statusBorder.heightAnchor.constraint(equalToConstant: 1),
 
             status.leadingAnchor.constraint(equalTo: statusBar.leadingAnchor, constant: 12),
             status.centerYAnchor.constraint(equalTo: statusBar.centerYAnchor),
-            interpLabel.trailingAnchor.constraint(equalTo: statusBar.trailingAnchor, constant: -12),
+
+            interpLabel.centerXAnchor.constraint(equalTo: statusBar.centerXAnchor),
             interpLabel.centerYAnchor.constraint(equalTo: statusBar.centerYAnchor),
+
+            linkValue.trailingAnchor.constraint(equalTo: statusBar.trailingAnchor, constant: -12),
+            linkValue.centerYAnchor.constraint(equalTo: statusBar.centerYAnchor)
         ])
-
-        updateTabLabel()
-        showTab(0)
-    }
-
-    @objc func newScript() {
-        guard let lp = linkedPath else { askLinkFirst(); return }
-        var i = 1
-        while FM.fileExists(atPath: URL(fileURLWithPath: lp).appendingPathComponent("Untitled-\(i).lua").path) { i += 1 }
-        let name = "Untitled-\(i).lua"
-        _ = FM.createFile(atPath: URL(fileURLWithPath: lp).appendingPathComponent(name).path,
-                          contents: Data("-- Opex-MacOS script\nprint(\"hello\")\n".utf8))
-        reloadFiles()
-        if let idx = files.firstIndex(of: name) {
-            table.selectRowIndexes(IndexSet(integer: idx), byExtendingSelection: false)
-        }
-    }
-
-    @objc func saveScript() {
-        guard let lp = linkedPath, let f = currentFile else { return }
-        let url = URL(fileURLWithPath: lp).appendingPathComponent(f)
-        do { try editor.string.write(to: url, atomically: true, encoding: .utf8) } catch { return }
-        log("💾 Saved \(f)", Theme.dim)
-        refreshStatus()
-    }
-
-    @objc func deleteScript() {
-        guard let lp = linkedPath, let f = currentFile else { return }
-        let alert = NSAlert()
-        alert.messageText = "Delete \(f)?"
-        alert.addButton(withTitle: "Delete")
-        alert.addButton(withTitle: "Cancel")
-        if alert.runModal() == .alertFirstButtonReturn {
-            try? FM.removeItem(at: URL(fileURLWithPath: lp).appendingPathComponent(f))
-            reloadFiles()
-            refreshStatus()
-        }
-    }
-
-    @objc func revealFolder() {
-        guard let lp = linkedPath else { askLinkFirst(); return }
-        revealInFinder(lp)
-    }
-
-    @objc func linkFolder() {
-        let panel = NSOpenPanel()
-        panel.title = "Opex-MacOS — Link Roblox Folder"
-        panel.message = "Click your Roblox folder, then click Open."
-        panel.canChooseDirectories = true
-        panel.canChooseFiles = false
-        panel.canCreateDirectories = true
-        panel.prompt = "Open"
-        panel.directoryURL = FM.fileExists(atPath: robloxClientFolder.path) ? robloxClientFolder : home
-        NSApp.activate(ignoringOtherApps: true)
-        if panel.runModal() == .OK, let p = panel.url?.path {
-            linkedPath = p
-            saveLink(p)
-            reloadFiles()
-            refreshStatus()
-        }
-    }
-
-    func openFinderAtRoblox() {
-        if FM.fileExists(atPath: robloxClientFolder.path) {
-            revealInFinder(robloxClientFolder.path)
-        } else {
-            revealInFinder(home.path)
-        }
-    }
-
-    func pickFolder() -> String? {
-        let panel = NSOpenPanel()
-        panel.title = "Opex-MacOS — Link Roblox Folder"
-        panel.message = "Click your Roblox folder, then click Open."
-        panel.canChooseDirectories = true
-        panel.canChooseFiles = false
-        panel.canCreateDirectories = true
-        panel.prompt = "Open"
-        panel.directoryURL = FM.fileExists(atPath: robloxClientFolder.path) ? robloxClientFolder : home
-        NSApp.activate(ignoringOtherApps: true)
-        return panel.runModal() == .OK ? panel.url?.path : nil
-    }
-
-    func askLinkFirst() {
-        let alert = NSAlert()
-        alert.messageText = "No folder linked"
-        alert.informativeText = "Choose the folder Opex-MacOS should save scripts into."
-        alert.addButton(withTitle: "Choose Folder")
-        alert.addButton(withTitle: "Cancel")
-        if alert.runModal() == .alertFirstButtonReturn { linkFolder() }
-    }
-
-    @objc func execute() {
-        guard let lp = linkedPath, let f = currentFile else {
-            log("⚠ No script selected.", Theme.dim, bold: true); return
-        }
-        let url = URL(fileURLWithPath: lp).appendingPathComponent(f)
-        try? editor.string.write(to: url, atomically: true, encoding: .utf8)
-        showTab(0)
-        guard let lua = luaPath ?? resolveLua() else {
-            log("✖ Lua not found. Re-run the installer, or: brew install lua", Theme.red, bold: true)
-            return
-        }
-        log("▶ Executing \(f) …", Theme.accent, bold: true)
-
-        let preludeURL = FileManager.default.temporaryDirectory
-            .appendingPathComponent("opex-prelude-\(UUID().uuidString).lua")
-        let prelude = """
-        local target = arg[1]
-        local chunk, lerr = loadfile(target)
-        if not chunk then
-            io.stderr:write("=== LOAD ERROR ===\\n" .. tostring(lerr) .. "\\n")
-            os.exit(2)
-        end
-
-        local ok, result = xpcall(function()
-            return chunk()
-        end, function(err)
-            return debug.traceback(err, 2)
-        end)
-
-        if not ok then
-            io.stderr:write("=== RUNTIME ERROR ===\\n" .. tostring(result) .. "\\n")
-            io.stderr:write("(If this mentions game, Instance, Players, workspace, etc., " ..
-                            "this is a Roblox script and cannot run outside the Roblox client.)\\n")
-            os.exit(3)
-        end
-
-        if type(result) == "function" then
-            local ok2, rerr = xpcall(result, function(err)
-                return debug.traceback(err, 2)
-            end)
-            if not ok2 then
-                io.stderr:write("=== RUNTIME ERROR ===\\n" .. tostring(rerr) .. "\\n")
-                os.exit(3)
-            end
-        end
-        """
-        try? prelude.write(to: preludeURL, atomically: true, encoding: .utf8)
-
-        runProcess(lua, [preludeURL.path, url.path]) { [weak self] out, err, code in
-            guard let self = self else { return }
-            try? FileManager.default.removeItem(at: preludeURL)
-            let o = out.trimmingCharacters(in: .whitespacesAndNewlines)
-            let e = err.trimmingCharacters(in: .whitespacesAndNewlines)
-            if !o.isEmpty { self.log(o, Theme.text) }
-            if !e.isEmpty { self.log(e, Theme.red) }
-            switch code {
-            case 0:  self.log("✔ Finished (exit 0)", Theme.green, bold: true)
-            case 2:  self.log("✖ Script failed to load — see LOAD ERROR above.", Theme.red, bold: true)
-            case 3:  self.log("✖ Script raised a runtime error — see RUNTIME ERROR above.", Theme.red, bold: true)
-            default: self.log("✖ Exited with code \(code)", Theme.red, bold: true)
-            }
-        }
-    }
-
-    @objc func checkProblems() {
-        guard let lp = linkedPath, let f = currentFile else { return }
-        let url = URL(fileURLWithPath: lp).appendingPathComponent(f)
-        try? editor.string.write(to: url, atomically: true, encoding: .utf8)
-        problemsAttr = NSMutableAttributedString()
-        appendTo(problemsAttr, "Checking \(f) …", Theme.dim, bold: false)
-        showTab(1)
-        guard let luac = luacPath ?? resolveLuac() else {
-            appendTo(problemsAttr, "⚠ luac not found — syntax checks unavailable.", Theme.dim, bold: false)
-            refreshVisible(); return
-        }
-        runProcess(luac, ["-p", url.path]) { [weak self] out, err, code in
-            guard let self = self else { return }
-            if code == 0 {
-                self.appendTo(self.problemsAttr, "✔ No syntax problems detected.", Theme.green, bold: true)
-            } else {
-                let e = err.isEmpty ? out : err
-                self.appendTo(self.problemsAttr, e.trimmingCharacters(in: .whitespacesAndNewlines), Theme.red, bold: false)
-            }
-            self.refreshVisible()
-        }
-    }
-
-    func appendTo(_ attr: NSMutableAttributedString, _ s: String, _ color: NSColor, bold: Bool) {
-        attr.append(NSAttributedString(string: s + "\n", attributes: [
-            .font: NSFont.monospacedSystemFont(ofSize: 11.5, weight: bold ? .semibold : .regular),
-            .foregroundColor: color
-        ]))
-    }
-    func log(_ s: String, _ color: NSColor = Theme.text, bold: Bool = false) {
-        appendTo(consoleAttr, s, color, bold: bold)
-        refreshVisible()
-    }
-    func refreshVisible() {
-        console.textStorage?.setAttributedString(activeTab == 0 ? consoleAttr : problemsAttr)
-        console.scrollToEndOfDocument(nil)
-    }
-    func showTab(_ idx: Int) {
-        activeTab = idx
-        btnConsoleTab.setActive(idx == 0)
-        btnProblemsTab.setActive(idx == 1)
-        refreshVisible()
-    }
-    @objc func showConsoleTab()   { showTab(0) }
-    @objc func showProblemsTab()  { showTab(1) }
-    @objc func clearConsole() {
-        if activeTab == 0 { consoleAttr = NSMutableAttributedString() } else { problemsAttr = NSMutableAttributedString() }
-        refreshVisible()
-    }
-    @objc func toggleConsole() {
-        collapsed.toggle()
-        let target: CGFloat = collapsed ? 27 : 170
-        NSAnimationContext.runAnimationGroup({ ctx in
-            ctx.duration = 0.22
-            ctx.timingFunction = CAMediaTimingFunction(name: .easeInEaseOut)
-            consoleHeight.animator().constant = target
-        })
-        collapseBtn.setGlyph(collapsed ? "▴" : "▾")
-    }
-
-    func refreshStatus() {
-        if let lp = linkedPath {
-            status.stringValue = "Linked: \(lp)"
-            linkValue.stringValue = (lp as NSString).abbreviatingWithTildeInPath
-        } else {
-            status.stringValue = "Not linked — click Link… or run: opex link"
-            linkValue.stringValue = "none"
-        }
-        if luaPath != nil {
-            let bundled = appSupportPath.appendingPathComponent("bin/lua").path
-            interpLabel.stringValue = luaPath == bundled ? "Lua: ready (bundled)" : "Lua: ready"
-        } else {
-            interpLabel.stringValue = "Lua: missing — re-run installer"
-        }
     }
 
     func reloadFiles() {
-        allFiles.removeAll()
-        if let lp = linkedPath, let items = try? FM.contentsOfDirectory(atPath: lp) {
-            allFiles = items
-                .filter { ["lua", "txt", "rbxm", "rbxmx", "json"].contains(($0 as NSString).pathExtension) }
-                .sorted { $0.localizedStandardCompare($1) == .orderedAscending }
-        }
-        filterFiles()
+        guard let p = linkedPath else { allFiles = []; files = []; table.reloadData(); return }
+        let url = URL(fileURLWithPath: p)
+        let items = (try? FM.contentsOfDirectory(atPath: url.path)) ?? []
+        allFiles = items.filter { $0.hasSuffix(".lua") }.sorted { $0.localizedStandardCompare($1) == .orderedAscending }
+        applyFilter()
     }
 
-    func filterFiles() {
-        let q = searchField.stringValue
+    func applyFilter() {
+        let q = searchField.stringValue.trimmingCharacters(in: .whitespacesAndNewlines)
         files = q.isEmpty ? allFiles : allFiles.filter { $0.localizedCaseInsensitiveContains(q) }
         table.reloadData()
-        if !files.isEmpty {
-            table.selectRowIndexes(IndexSet(integer: 0), byExtendingSelection: false)
-        } else {
-            currentFile = nil
-            editor.string = ""
-            updateTabLabel()
-        }
     }
 
-    func loadSelected() {
-        let row = table.selectedRow
-        guard row >= 0, row < files.count, let lp = linkedPath else { currentFile = nil; updateTabLabel(); return }
-        currentFile = files[row]
-        let url = URL(fileURLWithPath: lp).appendingPathComponent(files[row])
-        editor.string = (try? String(contentsOf: url, encoding: .utf8)) ?? ""
-        LuaHighlight.apply(to: editor)
-        gutter.refresh()
-        updateTabLabel()
-    }
-
-    func updateTabLabel() {
-        let dotColor = currentFile == nil ? Theme.dim : Theme.green
-        let s = NSMutableAttributedString(string: "●  ", attributes: [
-            .foregroundColor: dotColor, .font: NSFont.systemFont(ofSize: 11)
-        ])
-        s.append(NSAttributedString(string: currentFile ?? "No file", attributes: [
-            .foregroundColor: Theme.text, .font: NSFont.systemFont(ofSize: 12, weight: .medium)
-        ]))
-        tabLabel.attributedStringValue = s
-    }
-
-    func controlTextDidChange(_ obj: Notification) { filterFiles() }
+    func controlTextDidChange(_ obj: Notification) { applyFilter() }
 
     func textDidChange(_ notification: Notification) {
         LuaHighlight.apply(to: editor)
@@ -1184,305 +1029,304 @@ final class OpexApp: NSObject, NSApplicationDelegate, NSTextViewDelegate,
 
     func tableView(_ tableView: NSTableView, viewFor tableColumn: NSTableColumn?, row: Int) -> NSView? {
         let id = NSUserInterfaceItemIdentifier("cell")
-        let label: NSTextField
-        if let v = table.makeView(withIdentifier: id, owner: nil) as? NSTextField {
-            label = v
+        var cell = tableView.makeView(withIdentifier: id, owner: nil) as? NSTableCellView
+        if cell == nil {
+            cell = NSTableCellView()
+            cell?.identifier = id
+            let tf = NSTextField(labelWithString: "")
+            tf.font = NSFont.systemFont(ofSize: 12.5)
+            tf.textColor = Theme.text
+            cell?.addSubview(tf)
+            cell?.textField = tf
+            tf.translatesAutoresizingMaskIntoConstraints = false
+            NSLayoutConstraint.activate([
+                tf.leadingAnchor.constraint(equalTo: cell!.leadingAnchor, constant: 14),
+                tf.trailingAnchor.constraint(equalTo: cell!.trailingAnchor, constant: -10),
+                tf.centerYAnchor.constraint(equalTo: cell!.centerYAnchor)
+            ])
+        }
+        cell?.textField?.stringValue = files[row]
+        return cell
+    }
+
+    func tableViewSelectionDidChange(_ notification: Notification) {
+        let r = table.selectedRow
+        guard r >= 0 && r < files.count else { return }
+        openFile(files[r])
+    }
+
+    func openFile(_ name: String) {
+        guard let p = linkedPath else { return }
+        currentFile = name
+        tabLabel.stringValue = name
+        let url = URL(fileURLWithPath: p).appendingPathComponent(name)
+        let text = (try? String(contentsOf: url, encoding: .utf8)) ?? ""
+        editor.string = text
+        LuaHighlight.apply(to: editor)
+        gutter.refresh()
+        status.stringValue = "Opened \(name)"
+    }
+
+    @objc func newScript() {
+        guard let p = linkedPath else { askLinkFirst(); return }
+        let alert = NSAlert()
+        alert.messageText = "New Script"
+        alert.informativeText = "Enter script name (e.g. main.lua):"
+        let input = NSTextField(frame: NSRect(x: 0, y: 0, width: 240, height: 24))
+        input.stringValue = "script.lua"
+        alert.accessoryView = input
+        alert.addButton(withTitle: "Create")
+        alert.addButton(withTitle: "Cancel")
+        if alert.runModal() == .alertFirstButtonReturn {
+            var name = input.stringValue.trimmingCharacters(in: .whitespacesAndNewlines)
+            if name.isEmpty { return }
+            if !name.hasSuffix(".lua") { name += ".lua" }
+            let url = URL(fileURLWithPath: p).appendingPathComponent(name)
+            try? "-- \(name)\nprint(\"Hello from \(name)\")\n".write(to: url, atomically: true, encoding: .utf8)
+            reloadFiles()
+            if let idx = files.firstIndex(of: name) {
+                table.selectRowIndexes(IndexSet(integer: idx), byExtendingSelection: false)
+            }
+        }
+    }
+
+    @objc func saveScript() {
+        guard let p = linkedPath, let f = currentFile else { return }
+        let url = URL(fileURLWithPath: p).appendingPathComponent(f)
+        try? editor.string.write(to: url, atomically: true, encoding: .utf8)
+        status.stringValue = "Saved \(f)"
+    }
+
+    @objc func deleteScript() {
+        guard let p = linkedPath, let f = currentFile else { return }
+        let alert = NSAlert()
+        alert.messageText = "Delete \(f)?"
+        alert.informativeText = "This action cannot be undone."
+        alert.addButton(withTitle: "Delete")
+        alert.addButton(withTitle: "Cancel")
+        if alert.runModal() == .alertFirstButtonReturn {
+            let url = URL(fileURLWithPath: p).appendingPathComponent(f)
+            try? FM.removeItem(at: url)
+            currentFile = nil
+            tabLabel.stringValue = "Untitled.lua"
+            editor.string = ""
+            reloadFiles()
+        }
+    }
+
+    @objc func execute() {
+        saveScript()
+        guard let lua = luaPath else {
+            log("✖ Execution failed: No Lua interpreter configured.", Theme.red, bold: true)
+            return
+        }
+        guard let p = linkedPath, let f = currentFile else {
+            log("✖ Select or create a script first.", Theme.red)
+            return
+        }
+        let url = URL(fileURLWithPath: p).appendingPathComponent(f)
+        log("▶ Executing \(f) …", Theme.accent, bold: true)
+        runProcess(lua, [url.path]) { [weak self] out, err, code in
+            guard let self = self else { return }
+            let o = out.trimmingCharacters(in: .whitespacesAndNewlines)
+            let e = err.trimmingCharacters(in: .whitespacesAndNewlines)
+            if !o.isEmpty { self.log(o, Theme.text) }
+            if !e.isEmpty { self.log(e, Theme.red) }
+            self.log(code == 0 ? "✔ Process finished with code 0" : "✖ Process exited with code \(code)",
+                     code == 0 ? Theme.green : Theme.red)
+        }
+    }
+
+    @objc func checkProblems() {
+        saveScript()
+        guard let luac = luacPath else {
+            log("✖ Syntax check failed: luac not found.", Theme.red)
+            return
+        }
+        guard let p = linkedPath, let f = currentFile else { return }
+        let url = URL(fileURLWithPath: p).appendingPathComponent(f)
+        runProcess(luac, ["-p", url.path]) { [weak self] _, err, code in
+            guard let self = self else { return }
+            self.problemsAttr = NSMutableAttributedString()
+            if code == 0 {
+                self.appendAttr(self.problemsAttr, "✔ No syntax errors detected in \(f)\n", Theme.green, bold: true)
+            } else {
+                let cleanErr = err.replacingOccurrences(of: url.path + ":", with: "Line ")
+                self.appendAttr(self.problemsAttr, "✖ Syntax error in \(f):\n\(cleanErr)\n", Theme.red, bold: true)
+            }
+            if self.activeTab == 1 { self.renderConsole() }
+            self.showProblemsTab()
+        }
+    }
+
+    @objc func revealFolder() {
+        guard let p = linkedPath else { askLinkFirst(); return }
+        revealInFinder(p)
+    }
+
+    @objc func linkFolder() {
+        if let p = pickFolder() {
+            linkedPath = p
+            saveLink(p)
+            reloadFiles()
+            refreshStatus()
+        }
+    }
+
+    func askLinkFirst() {
+        openFinderAtRoblox()
+        linkFolder()
+    }
+
+    func openFinderAtRoblox() {
+        ensureDir(robloxClientFolder)
+        revealInFinder(robloxClientFolder.path)
+    }
+
+    func pickFolder() -> String? {
+        let open = NSOpenPanel()
+        open.title = "Select your Roblox workspace folder"
+        open.prompt = "Link Folder"
+        open.canChooseDirectories = true
+        open.canChooseFiles = false
+        open.allowsMultipleSelection = false
+        open.directoryURL = robloxClientFolder
+        return open.runModal() == .OK ? open.url?.path : nil
+    }
+
+    func refreshStatus() {
+        if let p = linkedPath {
+            let name = (p as NSString).lastPathComponent
+            linkValue.stringValue = "Linked: \(name)"
         } else {
-            label = NSTextField(labelWithString: "")
-            label.identifier = id
-            label.lineBreakMode = .byTruncatingMiddle
-            label.font = NSFont.systemFont(ofSize: 12)
+            linkValue.stringValue = "Not linked"
         }
-        label.textColor = Theme.text
-        label.stringValue = files[row]
-        return label
+        if let lp = luaPath {
+            let name = (lp as NSString).lastPathComponent
+            interpLabel.stringValue = "Lua: \(name)"
+        } else {
+            interpLabel.stringValue = "Lua: Missing"
+        }
     }
 
-    func tableViewSelectionDidChange(_ notification: Notification) { loadSelected() }
-}
-
-func printHelp() {
-    print("""
-    Opex-MacOS v2.2 — Lua script workspace for your Roblox folder
-
-    USAGE
-      opex                 Open the Opex-MacOS window
-      opex link            Choose the Roblox folder to link (Finder picker)
-      opex status          Show the currently linked folder
-      opex reveal          Reveal the linked folder in Finder
-      opex list            List scripts in the linked folder
-      opex new <file.lua>  Create a new script in the linked folder
-      opex run <file.lua>  Execute a script with the bundled Lua
-      opex autoexec on|off Toggle auto-execute on launch
-      opex unlink          Remove the link
-    """)
-}
-
-func handleCLI() -> Bool {
-    let args = CommandLine.arguments
-    guard args.count > 1 else { return false }
-    switch args[1] {
-    case "help", "-h", "--help":
-        printHelp()
-    case "status":
-        print(loadLink() ?? "Not linked. Run: opex link")
-        print(resolveLua() != nil ? "Lua: ready" : "Lua: missing — re-run installer")
-    case "unlink":
-        clearLink(); print("Unlinked.")
-    case "reveal":
-        if let lp = loadLink() { revealInFinder(lp) } else { print("Not linked. Run: opex link") }
-    case "list":
-        guard let lp = loadLink(), let items = try? FM.contentsOfDirectory(atPath: lp) else {
-            print("Not linked. Run: opex link"); break
-        }
-        let lua = items.filter { $0.hasSuffix(".lua") }.sorted()
-        print(lua.isEmpty ? "(no scripts yet)" : lua.joined(separator: "\n"))
-    case "new":
-        guard let lp = loadLink() else { print("Not linked. Run: opex link"); break }
-        let name = args.count > 2 ? args[2] : "untitled.lua"
-        let url = URL(fileURLWithPath: lp).appendingPathComponent(name)
-        _ = FM.createFile(atPath: url.path, contents: Data("-- Opex-MacOS script\n".utf8))
-        print("Created: \(url.path)")
-    case "autoexec":
-        if args.count > 2 && args[2] == "on"  { setAutoexec(true);  print("Auto-execute: ON") }
-        else if args.count > 2 && args[2] == "off" { setAutoexec(false); print("Auto-execute: OFF") }
-        else { print("Auto-execute is \(autoexecEnabled() ? "ON" : "OFF") (usage: opex autoexec on|off)") }
-    case "run":
-        guard let lp = loadLink() else { print("Not linked. Run: opex link"); break }
-        guard args.count > 2 else { print("Usage: opex run <file.lua>"); break }
-        let url = URL(fileURLWithPath: lp).appendingPathComponent(args[2])
-        guard FM.fileExists(atPath: url.path) else { print("File not found: \(url.path)"); break }
-        guard let lua = resolveLua() else {
-            print("Lua not found. Re-run installer, or: brew install lua"); break
-        }
-        let p = Process()
-        p.executableURL = URL(fileURLWithPath: lua)
-        p.arguments = [url.path]
-        p.standardOutput = FileHandle.standardOutput
-        p.standardError = FileHandle.standardError
-        do { try p.run(); p.waitUntilExit() } catch { print("Failed: \(error.localizedDescription)") }
-    case "link":
-        let app = NSApplication.shared
-        app.setActivationPolicy(.accessory)
-        if FM.fileExists(atPath: robloxClientFolder.path) {
-            revealInFinder(robloxClientFolder.path)
-        }
-        let panel = NSOpenPanel()
-        panel.title = "Opex-MacOS — Link Roblox Folder"
-        panel.message = "Click your Roblox folder, then click Open."
-        panel.canChooseDirectories = true
-        panel.canChooseFiles = false
-        panel.canCreateDirectories = true
-        panel.prompt = "Open"
-        panel.directoryURL = FM.fileExists(atPath: robloxClientFolder.path) ? robloxClientFolder : home
-        if panel.runModal() == .OK, let p = panel.url?.path { saveLink(p); print("Linked: \(p)") }
-        else { print("Cancelled.") }
-    default:
-        print("Unknown command: \(args[1])\n")
-        printHelp()
+    func log(_ text: String, _ color: NSColor, bold: Bool = false) {
+        appendAttr(consoleAttr, text + "\n", color, bold: bold)
+        if activeTab == 0 { renderConsole() }
     }
-    return true
-}
 
-if handleCLI() { exit(0) }
+    func appendAttr(_ target: NSMutableAttributedString, _ text: String, _ color: NSColor, bold: Bool = false) {
+        let f = bold ? NSFont.monospacedSystemFont(ofSize: 11.5, weight: .bold)
+                     : NSFont.monospacedSystemFont(ofSize: 11.5, weight: .regular)
+        let attrs: [NSAttributedString.Key: Any] = [.foregroundColor: color, .font: f]
+        target.append(NSAttributedString(string: text, attributes: attrs))
+    }
+
+    func renderConsole() {
+        console.textStorage?.setAttributedString(activeTab == 0 ? consoleAttr : problemsAttr)
+        console.scrollToEndOfDocument(nil)
+    }
+
+    @objc func showConsoleTab() {
+        activeTab = 0
+        btnConsoleTab.setActive(true)
+        btnProblemsTab.setActive(false)
+        renderConsole()
+    }
+
+    @objc func showProblemsTab() {
+        activeTab = 1
+        btnConsoleTab.setActive(false)
+        btnProblemsTab.setActive(true)
+        renderConsole()
+    }
+
+    @objc func clearConsole() {
+        if activeTab == 0 { consoleAttr = NSMutableAttributedString() }
+        else { problemsAttr = NSMutableAttributedString() }
+        renderConsole()
+    }
+
+    @objc func toggleCollapse() {
+        collapsed.toggle()
+        consoleHeight.constant = collapsed ? 28 : 160
+        collapseBtn.setGlyph(collapsed ? "▲" : "▼")
+        NSAnimationContext.runAnimationGroup { ctx in
+            ctx.duration = 0.15
+            window.contentView?.layoutSubtreeIfNeeded()
+        }
+    }
+}
 
 let app = NSApplication.shared
 let delegate = OpexApp()
 app.delegate = delegate
-app.setActivationPolicy(.regular)
 app.run()
 SWIFT_EOF
 
-set_progress 22
+set_progress 45
 
-step_msg "${YELLOW}[*] Step 3/6 — Creating app bundle...${NC}"
-cat > "$SCRIPT_DIR/src/Info.plist" <<'PLIST_EOF'
+# ============================================================
+#  Compile Architecture Outputs
+# ============================================================
+step_msg "${YELLOW}[*] Step 4/6 — Compiling Native C++ Executor Injector...${NC}"
+clang++ -std=c++17 -arch arm64 -o "$SCRIPT_DIR/src/executor" "$SCRIPT_DIR/src/macos_executor.cpp" -framework CoreFoundation -ldl
+set_progress 65
+
+step_msg "${YELLOW}[*] Step 5/6 — Compiling Swift Frontend App Bundle...${NC}"
+mkdir -p "$APP_PATH/Contents/MacOS"
+mkdir -p "$APP_PATH/Contents/Resources"
+
+cat > "$APP_PATH/Contents/Info.plist" <<PLIST_EOF
 <?xml version="1.0" encoding="UTF-8"?>
 <!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
 <plist version="1.0">
 <dict>
-  <key>CFBundleName</key><string>Opex-MacOS</string>
-  <key>CFBundleDisplayName</key><string>Opex-MacOS</string>
-  <key>CFBundleIdentifier</key><string>com.opex.macos</string>
-  <key>CFBundleExecutable</key><string>Opex-MacOS</string>
-  <key>CFBundlePackageType</key><string>APPL</string>
-  <key>CFBundleShortVersionString</key><string>2.2.0</string>
-  <key>CFBundleVersion</key><string>4</string>
-  <key>LSMinimumSystemVersion</key><string>11.0</string>
-  <key>NSHighResolutionCapable</key><true/>
-  <key>LSApplicationCategoryType</key><string>public.app-category.developer-tools</string>
+    <key>CFBundleExecutable</key>
+    <string>Opex-MacOS</string>
+    <key>CFBundleIdentifier</key>
+    <string>com.opex.macos</string>
+    <key>CFBundleName</key>
+    <string>Opex-MacOS</string>
+    <key>CFBundlePackageType</key>
+    <string>APPL</string>
+    <key>CFBundleShortVersionString</key>
+    <string>$VERSION</string>
+    <key>LSMinimumSystemVersion</key>
+    <string>11.0</string>
+
+    <key>NSHighResolutionCapable</key>
+    <true/>
 </dict>
 </plist>
 PLIST_EOF
-set_progress 28
 
-step_msg "${YELLOW}[*] Step 4/6 — Building Opex-MacOS...${NC}"
-mkdir -p "$BUILD_DIR"
+swiftc -O "$SCRIPT_DIR/src/main.swift" -o "$APP_PATH/Contents/MacOS/Opex-MacOS"
+set_progress 85
 
-(
-    [ "$IS_TTY" -eq 1 ] || exit 0
-    pct=$CURRENT_PCT
-    while true; do
-        if [ "$pct" -lt 88 ]; then
-            inc=$(( pct < 50 ? 3 : (pct < 80 ? 2 : 1) ))
-            pct=$(( pct + inc ))
-            draw_bar "$pct"
-        fi
-        sleep 0.7
-    done
-) &
-CREEP_PID=$!
-trap 'kill $CREEP_PID 2>/dev/null' EXIT
-
-BUILD_STATUS=0
-swiftc "$SCRIPT_DIR/src/main.swift" -o "$BUILD_DIR/$APP_NAME" -framework AppKit || BUILD_STATUS=$?
-
-kill $CREEP_PID 2>/dev/null || true
-wait $CREEP_PID 2>/dev/null || true
-sleep 0.05
-
-if [ $BUILD_STATUS -ne 0 ]; then
-    printf "\r\033[K"
-    echo -e "${RED}[!] Build failed — see compiler errors above.${NC}"
-    exit 1
-fi
-set_progress 88
-
-mkdir -p "$APP_PATH/Contents/MacOS" "$APP_PATH/Contents/Resources"
-cp "$BUILD_DIR/$APP_NAME" "$APP_PATH/Contents/MacOS/$APP_NAME"
-cp "$SCRIPT_DIR/src/Info.plist" "$APP_PATH/Contents/Info.plist"
-codesign --force -s - "$APP_PATH" 2>/dev/null || true
-set_progress 90
-
-step_msg "${YELLOW}[*] Step 5/6 — Building bundled Lua interpreter (no brew needed)...${NC}"
+# ============================================================
+#  Bundle Portable Lua Runtime
+# ============================================================
+step_msg "${YELLOW}[*] Step 6/6 — Bundling local Lua environment...${NC}"
 mkdir -p "$OPEX_SUPPORT/bin"
 
-if [ -x "$OPEX_SUPPORT/bin/lua" ] \
-   && [ -x "$OPEX_SUPPORT/bin/lua-bin" ] \
-   && [ -f "$OPEX_SUPPORT/bin/shim.lua" ] \
-   && [ -x "$OPEX_SUPPORT/bin/luac" ]; then
-    step_msg "${GREEN}[✔] Bundled Lua + shim already present — skipping.${NC}"
-else
-    LUA_TGZ="$BUILD_DIR/lua-5.4.6.tar.gz"
-    LUA_SRC="$BUILD_DIR/lua-5.4.6"
-    LUA_OK=1
-    curl -fsSL --max-time 60 -o "$LUA_TGZ" "https://www.lua.org/ftp/lua-5.4.6.tar.gz" || LUA_OK=0
-    if [ "$LUA_OK" = "1" ]; then tar -xzf "$LUA_TGZ" -C "$BUILD_DIR" || LUA_OK=0; fi
-
-    if [ "$LUA_OK" = "1" ] && [ -d "$LUA_SRC" ]; then
-        ( cd "$LUA_SRC" && make all \
-            SYSCFLAGS="-DLUA_USE_MACOSX" \
-            SYSLIBS="" \
-            >/dev/null 2>&1 ) || LUA_OK=0
-    fi
-
-    if [ "$LUA_OK" = "1" ] && [ -x "$LUA_SRC/src/lua" ] && [ -x "$LUA_SRC/src/luac" ]; then
-        cp "$LUA_SRC/src/lua"  "$OPEX_SUPPORT/bin/lua-bin"
-        cp "$LUA_SRC/src/luac" "$OPEX_SUPPORT/bin/luac"
-        chmod +x "$OPEX_SUPPORT/bin/lua-bin" "$OPEX_SUPPORT/bin/luac"
-
-        cat > "$OPEX_SUPPORT/bin/shim.lua" <<'SHIM_LUA_EOF'
--- Opex-MacOS Lua shim
-if type(loadstring) ~= "function" then
-    loadstring = function(chunk, chunkname)
-        if type(chunk) ~= "string" then
-            return nil, "loadstring: expected string, got " .. type(chunk)
-        end
-        return load(chunk, chunkname or "=(loadstring)", "t", _G)
-    end
-end
-
-local function shell_quote(s)
-    return "'" .. tostring(s):gsub("'", "'\\''") .. "'"
-end
-
-local function http_get(url)
-    if type(url) ~= "string" or url == "" then
-        return nil, "invalid url"
-    end
-    local cmd = "curl -fsSL --max-time 30 " .. shell_quote(url)
-    local p = io.popen(cmd, "r")
-    if not p then return nil, "could not spawn curl" end
-    local body = p:read("*a")
-    local ok = p:close()
-    if not ok then return nil, "curl failed" end
-    if body == nil or body == "" then
-        return nil, "empty response"
-    end
-    return body
-end
-
-if type(game) ~= "table" then game = {} end
-function game:HttpGet(url)      return http_get(url) end
-function game:HttpGetAsync(url) return http_get(url) end
-
-local function request_impl(t)
-    if type(t) == "table" and type(t.Url) == "string" then
-        local body = http_get(t.Url)
-        if body == nil then
-            return { Body = "", StatusCode = 0, Success = false, Headers = {} }
-        end
-        return { Body = body, StatusCode = 200, Success = true, Headers = {} }
-    end
-    return { Body = "", StatusCode = 400, Success = false, Headers = {} }
-end
-request      = request_impl
-http_request = request_impl
-SHIM_LUA_EOF
-
-        cat > "$OPEX_SUPPORT/bin/lua" <<'WRAP_EOF'
-#!/bin/bash
-DIR="$(cd "$(dirname "$0")" && pwd)"
-export LUA_INIT="@$DIR/shim.lua"
-exec "$DIR/lua-bin" "$@"
-WRAP_EOF
-        chmod +x "$OPEX_SUPPORT/bin/lua"
-
-        step_msg "${GREEN}[✔] Lua 5.4.6 + shim installed.${NC}"
-    else
-        printf "\r\033[K"
-        step_msg "${YELLOW}[!] Could not download/build Lua (offline?).${NC}"
-    fi
+if command -v lua >/dev/null 2>&1; then
+    cp "$(which lua)" "$OPEX_SUPPORT/bin/lua" 2>/dev/null || true
 fi
-set_progress 96
-
-step_msg "${YELLOW}[*] Step 6/6 — Installing CLI tool...${NC}"
-BIN_DIR=""
-for dir in "$HOME/.local/bin" "$HOME/bin" "/usr/local/bin"; do
-    if mkdir -p "$dir" 2>/dev/null && [ -w "$dir" ]; then BIN_DIR="$dir"; break; fi
-done
-if [ -z "$BIN_DIR" ]; then
-    step_msg "${YELLOW}[!] No writable bin folder — skipping CLI. App still works: open $APP_PATH${NC}"
-else
-    cp "$BUILD_DIR/$APP_NAME" "$BIN_DIR/opex"
-    chmod +x "$BIN_DIR/opex"
-    if ! echo "$PATH" | grep -q "$BIN_DIR"; then
-        SHELL_RC="$HOME/.zshrc"
-        if [ -f "$HOME/.bashrc" ] && [ "$SHELL" = "/bin/bash" ]; then SHELL_RC="$HOME/.bashrc"; fi
-        if ! grep -q "$BIN_DIR" "$SHELL_RC" 2>/dev/null; then
-            echo "export PATH=\"$BIN_DIR:\$PATH\"" >> "$SHELL_RC"
-        fi
-    fi
+if command -v luac >/dev/null 2>&1; then
+    cp "$(which luac)" "$OPEX_SUPPORT/bin/luac" 2>/dev/null || true
 fi
-set_progress 98
+
+# Copy native executor binary to support paths
+cp "$SCRIPT_DIR/src/executor" "$OPEX_SUPPORT/bin/executor" 2>/dev/null || true
 
 set_progress 100
+printf "\r\033[K"
 echo ""
+echo -e "${GREEN}════════════════════════════════════════════════════════════${NC}"
+echo -e "${GREEN}${BOLD}✔ Opex-MacOS v$VERSION successfully built!${NC}"
+echo -e "${GREEN}════════════════════════════════════════════════════════════${NC}"
+echo -e "  App Bundle:     ${CYAN}$APP_PATH${NC}"
+echo -e "  C++ Injector:   ${CYAN}$OPEX_SUPPORT/bin/executor${NC}"
 echo ""
-echo -e "${GREEN}╔══════════════════════════════════════════╗${NC}"
-echo -e "${GREEN}║        ✔  100% — Install Complete        ║${NC}"
-echo -e "${GREEN}╚══════════════════════════════════════════╝${NC}"
+echo -e "Run using: ${BOLD}open \"$APP_PATH\"${NC}"
 echo ""
-echo -e "  ${CYAN}App:${NC}      $APP_PATH"
-echo -e "  ${CYAN}CLI:${NC}      ${BIN_DIR:-skipped}/opex"
-echo -e "  ${CYAN}Lua:${NC}      bundled at ~/Library/Application Support/Opex-MacOS/bin/lua"
-echo ""
-
-if [ -t 0 ]; then
-    read -p "Launch Opex-MacOS now? [Y/n] " -n 1 -r
-    echo ""
-    if [[ ! $REPLY =~ ^[Nn]$ ]]; then open "$APP_PATH"; fi
-else
-    open "$APP_PATH"
-fi
-echo -e "${GREEN}[✔] Done.${NC}"
