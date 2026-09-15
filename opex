@@ -1,1332 +1,1247 @@
-#!/bin/bash
+ ============================================================
+
+#  Opex-MacOS v2.2 — Installer (bundles its own Lua, no brew)
+
 # ============================================================
-#  Opex-MacOS v2.2 — Complete Installer & Core Injector
-# ============================================================
+
+
 
 set -euo pipefail
 
+
+
 APP_NAME="Opex-MacOS"
+
 VERSION="2.2.0"
+
 SCRIPT_DIR="$(cd "$(dirname "$0")" 2>/dev/null && pwd || pwd)"
+
 if [ ! -w "$SCRIPT_DIR" ]; then SCRIPT_DIR="$HOME"; fi
+
 BUILD_DIR="$SCRIPT_DIR/build"
+
 APP_PATH="$BUILD_DIR/$APP_NAME.app"
+
 OPEX_SUPPORT="$HOME/Library/Application Support/Opex-MacOS"
+
+
 
 RED='\033[0;31m'; GREEN='\033[0;32m'; YELLOW='\033[1;33m'; CYAN='\033[0;36m'; BOLD='\033[1m'; NC='\033[0m'
 
+
+
 IS_TTY=1
+
 [ -t 1 ] || IS_TTY=0
+
 CURRENT_PCT=0
+
 BAR_WIDTH=40
 
+
+
 draw_bar() {
+
     [ "$IS_TTY" -eq 1 ] || return 0
+
     local pct=${1:-$CURRENT_PCT}
+
     local filled=$(( BAR_WIDTH * pct / 100 ))
+
     local empty=$(( BAR_WIDTH - filled ))
+
     local bar="" i
+
     for ((i=0; i<filled; i++)); do bar+="#"; done
+
     for ((i=0; i<empty; i++)); do bar+="·"; done
+
     printf "\r  ${CYAN}[${NC}${GREEN}${bar}${NC}${CYAN}]${NC} ${BOLD}%3d%%${NC}  " "$pct"
+
 }
+
 set_progress() { CURRENT_PCT=$1; draw_bar; }
+
 step_msg() {
+
     if [ "$IS_TTY" -eq 1 ]; then
+
         printf "\r\033[K"
+
         printf "%b\n" "$1"
+
         draw_bar
+
     else
+
         printf "%b\n" "$1"
+
     fi
+
 }
+
+
 
 echo -e "${CYAN}╔══════════════════════════════════════════╗${NC}"
-echo -e "${CYAN}║    Opex-MacOS — Installer v$VERSION         ║${NC}"
+
+echo -e "${CYAN}║   Opex-MacOS — Installer v$VERSION        ║${NC}"
+
 echo -e "${CYAN}╚══════════════════════════════════════════╝${NC}"
+
 echo ""
+
 set_progress 0
 
+
+
 step_msg "${YELLOW}[*] Step 1/6 — Checking requirements...${NC}"
+
 if ! xcode-select -p >/dev/null 2>&1; then
+
     printf "\r\033[K"
+
     echo -e "${RED}[!] Xcode Command Line Tools not found.${NC}"
+
     echo "    Run:  xcode-select --install"
+
     exit 1
+
 fi
+
 set_progress 8
 
-# ============================================================
-#  Write Native Core (C++ Executor / Injector)
-# ============================================================
-step_msg "${YELLOW}[*] Step 2/6 — Writing C++ Core Injector...${NC}"
+
+
+step_msg "${YELLOW}[*] Step 2/6 — Writing Swift source code...${NC}"
+
 mkdir -p "$SCRIPT_DIR/src"
 
-cat > "$SCRIPT_DIR/src/macos_executor.cpp" <<'CPP_EOF'
-// macos_executor.cpp
-// Compile: clang++ -std=c++17 -arch arm64 -o executor macos_executor.cpp -framework CoreFoundation -ldl
-// Note: Requires elevated privileges / disabled SIP to perform Mach task injection.
 
-#include <mach/mach.h>
-#include <mach/mach_vm.h>
-#include <mach-o/dyld_images.h>
-#include <sys/ptrace.h>
-#include <dlfcn.h>
-#include <cstdio>
-#include <cstring>
-#include <string>
-
-typedef struct lua_State lua_State;
-typedef int (*lua_CFunction)(lua_State* L);
-
-extern "C" {
-    void        lua_pushcfunction(lua_State*, lua_CFunction);
-    void        lua_setglobal(lua_State*, const char*);
-    const char* luaL_checkstring(lua_State*, int);
-    int         luaL_loadstring(lua_State*, const char*);
-    void        lua_pushnil(lua_State*);
-    void        lua_pushstring(lua_State*, const char*);
-}
-
-static bool inject_dylib(pid_t pid, const char* dylib) {
-    task_t task;
-    if (task_for_pid(mach_task_self(), pid, &task) != KERN_SUCCESS) {
-        fprintf(stderr, "task_for_pid failed (SIP on? not root?)\n");
-        return false;
-    }
-
-    size_t len = strlen(dylib) + 1;
-    mach_vm_address_t remote = 0;
-    if (mach_vm_allocate(task, &remote, len, VM_FLAGS_ANYWHERE) != KERN_SUCCESS)
-        return false;
-
-    mach_vm_write(task, remote, (vm_offset_t)dylib, (mach_msg_type_number_t)len);
-
-    task_dyld_info_data_t info;
-    mach_msg_type_number_t count = TASK_DYLD_INFO_COUNT;
-    task_info(task, TASK_DYLD_INFO, (task_info_t)&info, &count);
-
-    fprintf(stderr, "Successfully injected %s into target PID %d\n", dylib, pid);
-    return true;
-}
-
-static lua_State* g_L = nullptr;
-
-static int lua_loadstring_hook(lua_State* L) {
-    g_L = L;
-    const char* code = luaL_checkstring(L, 1);
-    if (luaL_loadstring(L, code) != 0) {
-        lua_pushnil(L);
-    }
-    return 1;
-}
-
-static int lua_httpget(lua_State* L) {
-    const char* url = luaL_checkstring(L, 2);
-    std::string body;
-    FILE* p = popen(("curl -sL \"" + std::string(url) + "\"").c_str(), "r");
-    if (p) {
-        char buf[4096];
-        size_t n;
-        while ((n = fread(buf, 1, sizeof buf, p)) > 0) body.append(buf, n);
-        pclose(p);
-    }
-    lua_pushstring(L, body.c_str());
-    return 1;
-}
-
-static void install_globals(lua_State* L) {
-    lua_pushcfunction(L, lua_loadstring_hook);
-    lua_setglobal(L, "loadstring");
-    (void)lua_httpget;
-}
-
-int main(int argc, char** argv) {
-    if (argc < 3) {
-        fprintf(stderr, "usage: %s <pid> <payload.dylib>\n", argv[0]);
-        return 1;
-    }
-    pid_t pid = atoi(argv[1]);
-    if (!inject_dylib(pid, argv[2])) return 1;
-    if (g_L) install_globals(g_L);
-    printf("Execution runtime attached.\n");
-    return 0;
-}
-CPP_EOF
-set_progress 20
-
-# ============================================================
-#  Write Frontend Application (Swift macOS GUI)
-# ============================================================
-step_msg "${YELLOW}[*] Step 3/6 — Writing Swift App UI...${NC}"
 
 cat > "$SCRIPT_DIR/src/main.swift" <<'SWIFT_EOF'
+
 import AppKit
 
+
+
 let FM   = FileManager.default
+
 let home = FM.homeDirectoryForCurrentUser
 
+
+
 let appSupportPath      = home.appendingPathComponent("Library/Application Support/Opex-MacOS", isDirectory: true)
+
 let configPath          = appSupportPath.appendingPathComponent("linked-folder.txt")
+
 let autoexecFlagPath    = appSupportPath.appendingPathComponent("autoexec.txt")
+
 let robloxClientFolder  = home.appendingPathComponent("Library/Application Support/Roblox", isDirectory: true)
+
 let robloxAppUserPath   = home.appendingPathComponent("Applications/Roblox.app")
 
+
+
 func loadLink() -> String? {
+
     guard let raw = try? String(contentsOf: configPath, encoding: .utf8) else { return nil }
+
     let p = raw.trimmingCharacters(in: .whitespacesAndNewlines)
+
     return p.isEmpty ? nil : p
+
 }
+
 func saveLink(_ path: String) {
+
     try? FM.createDirectory(at: appSupportPath, withIntermediateDirectories: true)
+
     try? path.write(to: configPath, atomically: true, encoding: .utf8)
+
 }
+
 func clearLink() { try? FM.removeItem(at: configPath) }
+
 func ensureDir(_ url: URL) {
+
     if !FM.fileExists(atPath: url.path) { try? FM.createDirectory(at: url, withIntermediateDirectories: true) }
+
 }
+
 func revealInFinder(_ path: String) { NSWorkspace.shared.selectFile(nil, inFileViewerRootedAtPath: path) }
 
+
+
 func autoexecEnabled() -> Bool {
+
     guard let s = try? String(contentsOf: autoexecFlagPath, encoding: .utf8) else { return true }
+
     return s.trimmingCharacters(in: .whitespacesAndNewlines).lowercased() != "off"
+
 }
+
 func setAutoexec(_ on: Bool) {
+
     try? FM.createDirectory(at: appSupportPath, withIntermediateDirectories: true)
+
     try? (on ? "on" : "off").write(to: autoexecFlagPath, atomically: true, encoding: .utf8)
+
 }
+
+
 
 func which(_ name: String) -> String? {
+
     let p = Process()
+
     p.executableURL = URL(fileURLWithPath: "/usr/bin/which")
+
     p.arguments = [name]
+
     let pipe = Pipe()
+
     p.standardOutput = pipe
+
     p.standardError = FileHandle.nullDevice
+
     do { try p.run() } catch { return nil }
+
     let data = pipe.fileHandleForReading.readDataToEndOfFile()
+
     p.waitUntilExit()
+
     let out = String(data: data, encoding: .utf8)?.trimmingCharacters(in: .whitespacesAndNewlines) ?? ""
+
     return (p.terminationStatus == 0 && !out.isEmpty) ? out : nil
+
 }
+
 func findBinary(_ names: [String]) -> String? {
+
     for n in names { if let p = which(n) { return p } }
+
     return nil
+
 }
+
+
 
 func resolveLua() -> String? {
+
     let bundled = appSupportPath.appendingPathComponent("bin/lua")
+
     if FM.isExecutableFile(atPath: bundled.path) { return bundled.path }
+
     return findBinary(["lua", "lua5.4", "lua5.3", "luajit"])
+
 }
+
 func resolveLuac() -> String? {
+
     let bundled = appSupportPath.appendingPathComponent("bin/luac")
+
     if FM.isExecutableFile(atPath: bundled.path) { return bundled.path }
+
     return findBinary(["luac", "luac5.4", "luac5.3"])
+
 }
+
+
 
 func runProcess(_ path: String, _ args: [String], completion: @escaping (String, String, Int32) -> Void) {
+
     DispatchQueue.global(qos: .userInitiated).async {
+
         let p = Process()
+
         p.executableURL = URL(fileURLWithPath: path)
+
         p.arguments = args
+
         let outPipe = Pipe(), errPipe = Pipe()
+
         p.standardOutput = outPipe
+
         p.standardError = errPipe
+
         do { try p.run() } catch {
+
             DispatchQueue.main.async { completion("", error.localizedDescription, -1) }
+
             return
+
         }
+
         let outData = outPipe.fileHandleForReading.readDataToEndOfFile()
+
         let errData = errPipe.fileHandleForReading.readDataToEndOfFile()
+
         p.waitUntilExit()
+
         let out = String(data: outData, encoding: .utf8) ?? ""
+
         let err = String(data: errData, encoding: .utf8) ?? ""
+
         DispatchQueue.main.async { completion(out, err, p.terminationStatus) }
+
     }
+
 }
+
+
 
 struct Theme {
+
     static let bg      = NSColor(srgbRed: 0.051, green: 0.059, blue: 0.078, alpha: 1)
+
     static let sidebar = NSColor(srgbRed: 0.067, green: 0.075, blue: 0.098, alpha: 1)
+
     static let panel   = NSColor(srgbRed: 0.078, green: 0.086, blue: 0.110, alpha: 1)
+
     static let editor  = NSColor(srgbRed: 0.043, green: 0.051, blue: 0.067, alpha: 1)
+
     static let border  = NSColor(srgbRed: 0.14,  green: 0.15,  blue: 0.19,  alpha: 1)
+
     static let accent  = NSColor(srgbRed: 0.290, green: 0.561, blue: 1.000, alpha: 1)
+
     static let green   = NSColor(srgbRed: 0.243, green: 0.784, blue: 0.420, alpha: 1)
+
     static let red     = NSColor.systemRed
+
     static let text    = NSColor(srgbRed: 0.671, green: 0.706, blue: 0.761, alpha: 1)
+
     static let dim     = NSColor(srgbRed: 0.42,  green: 0.45,  blue: 0.51,  alpha: 1)
+
 }
+
+
 
 func solidView(_ color: NSColor, _ radius: CGFloat = 0) -> NSView {
+
     let v = NSView()
+
     v.wantsLayer = true
+
     v.layer?.backgroundColor = color.cgColor
+
     v.layer?.cornerRadius = radius
+
     return v
+
 }
+
+
 
 final class PillButton: NSButton {
+
     private var baseColor: NSColor
+
     private var hoverColor: NSColor
+
     private var tracking: NSTrackingArea?
 
+
+
     init(title: String, base: NSColor, textColor: NSColor, target: AnyObject?, action: Selector, tooltip: String) {
+
         baseColor = base
+
         hoverColor = base.blended(withFraction: 0.20, of: .white) ?? base
+
         super.init(frame: .zero)
+
         isBordered = false
+
         setButtonType(.momentaryChange)
+
         wantsLayer = true
+
         attributedTitle = NSAttributedString(string: title, attributes: [
+
             .font: NSFont.systemFont(ofSize: 12.5, weight: .semibold),
+
             .foregroundColor: textColor
+
         ])
+
         self.target = target
+
         self.action = action
+
         toolTip = tooltip
+
     }
+
     required init?(coder: NSCoder) { fatalError("unsupported") }
+
     override func layout() {
+
         super.layout()
+
         wantsLayer = true
+
         layer?.cornerRadius = 6
+
         layer?.backgroundColor = baseColor.cgColor
+
     }
+
     override func updateTrackingAreas() {
+
         super.updateTrackingAreas()
+
         if let t = tracking { removeTrackingArea(t) }
+
         let t = NSTrackingArea(rect: bounds, options: [.mouseEnteredAndExited, .activeInKeyWindow], owner: self, userInfo: nil)
+
         addTrackingArea(t)
+
         tracking = t
+
     }
+
     override func mouseEntered(with event: NSEvent) { layer?.backgroundColor = hoverColor.cgColor }
+
     override func mouseExited(with event: NSEvent)  { layer?.backgroundColor = baseColor.cgColor }
+
     override var intrinsicContentSize: NSSize {
+
         let s = attributedTitle.size()
+
         return NSSize(width: s.width + 22, height: 26)
+
     }
+
 }
+
+
 
 final class TextButton: NSButton {
+
     private var active = false
+
     private let normalColor: NSColor
+
     private let activeColor: NSColor
+
     private let titleText: String
 
+
+
     init(_ title: String, normal: NSColor, active: NSColor, target: AnyObject?, action: Selector) {
+
         normalColor = normal
+
         activeColor = active
+
         titleText = title
+
         super.init(frame: .zero)
+
         isBordered = false
+
         setButtonType(.momentaryChange)
+
         self.target = target
+
         self.action = action
+
         render()
+
     }
+
     required init?(coder: NSCoder) { fatalError("unsupported") }
+
     func setActive(_ a: Bool) { active = a; render() }
+
     func setGlyph(_ g: String) {
+
         attributedTitle = NSAttributedString(string: g, attributes: [
+
             .font: NSFont.systemFont(ofSize: 13, weight: .medium),
+
             .foregroundColor: Theme.dim
+
         ])
+
     }
+
     private func render() {
+
         attributedTitle = NSAttributedString(string: titleText, attributes: [
+
             .font: NSFont.systemFont(ofSize: 11, weight: active ? .bold : .medium),
+
             .foregroundColor: active ? activeColor : normalColor,
+
             .kern: NSNumber(value: 1.2)
+
         ])
+
     }
+
     override var intrinsicContentSize: NSSize {
+
         let s = attributedTitle.size()
+
         return NSSize(width: s.width + 14, height: 20)
+
     }
+
 }
 
+
+
 final class GutterView: NSView {
+
     weak var textView: NSTextView?
+
     private var observing = false
 
+
+
     init(textView: NSTextView) {
+
         self.textView = textView
+
         super.init(frame: NSRect(x: 0, y: 0, width: 44, height: 10))
+
         textView.postsFrameChangedNotifications = true
+
         let nc = NotificationCenter.default
+
         nc.addObserver(self, selector: #selector(refresh),
+
                        name: NSText.didChangeNotification, object: textView)
+
         nc.addObserver(self, selector: #selector(refresh),
+
                        name: NSView.frameDidChangeNotification, object: textView)
+
     }
+
     required init?(coder: NSCoder) { fatalError("unsupported") }
+
+
 
     @objc func refresh() { needsDisplay = true }
 
+
+
     override var isFlipped: Bool { true }
 
+
+
     override func viewDidMoveToWindow() {
+
         super.viewDidMoveToWindow()
+
         guard !observing, window != nil,
+
               let clip = textView?.enclosingScrollView?.contentView else { return }
+
         clip.postsBoundsChangedNotifications = true
+
         NotificationCenter.default.addObserver(self, selector: #selector(refresh),
+
                                                name: NSView.boundsDidChangeNotification, object: clip)
+
         observing = true
+
     }
+
+
 
     override func draw(_ dirtyRect: NSRect) {
+
         guard let tv = textView, let lm = tv.layoutManager, let container = tv.textContainer else { return }
+
         Theme.editor.setFill()
+
         bounds.fill()
+
         Theme.border.setFill()
+
         NSRect(x: bounds.maxX - 1, y: 0, width: 1, height: bounds.height).fill()
 
+
+
         let text = tv.string as NSString
+
         let visible = lm.glyphRange(forBoundingRect: tv.visibleRect, in: container)
+
         let attrs: [NSAttributedString.Key: Any] = [
+
             .font: NSFont.monospacedDigitSystemFont(ofSize: 10.5, weight: .regular),
+
             .foregroundColor: Theme.dim
+
         ]
+
         var glyph = visible.location
+
         while glyph < NSMaxRange(visible) {
+
             var lineGlyphRange = NSRange()
+
             let lineRect = lm.lineFragmentRect(forGlyphAt: glyph, effectiveRange: &lineGlyphRange)
+
             if NSMaxRange(lineGlyphRange) <= glyph { break }
+
             let charIndex = lm.characterIndexForGlyph(at: glyph)
+
             if charIndex != NSNotFound {
+
                 let before = text.substring(with: NSRange(location: 0, length: min(charIndex, text.length)))
+
                 let lineNumber = before.components(separatedBy: "\n").count
+
                 let s = NSAttributedString(string: String(lineNumber), attributes: attrs)
+
                 let sz = s.size()
+
                 let y = lineRect.minY + tv.textContainerOrigin.y
+
                 let p = convert(NSPoint(x: 0, y: y), from: tv)
+
                 s.draw(at: NSPoint(x: bounds.width - 10 - sz.width,
+
                                    y: p.y + max(0, (lineRect.height - sz.height) / 2)))
+
             }
+
             glyph = NSMaxRange(lineGlyphRange)
+
         }
+
     }
+
 }
+
+
 
 enum LuaHighlight {
+
     static let font = NSFont(name: "Menlo", size: 13) ?? NSFont.monospacedSystemFont(ofSize: 13, weight: .regular)
+
     static let italicFont = NSFontManager.shared.convert(font, toHaveTrait: .italicFontMask)
+
     static let keywordColor = NSColor(srgbRed: 0.78, green: 0.47, blue: 0.87, alpha: 1)
+
     static let stringColor  = NSColor(srgbRed: 0.60, green: 0.77, blue: 0.47, alpha: 1)
+
     static let numberColor  = NSColor(srgbRed: 0.83, green: 0.61, blue: 0.40, alpha: 1)
+
     static let commentColor = NSColor(srgbRed: 0.40, green: 0.44, blue: 0.50, alpha: 1)
+
     static let fnColor      = NSColor(srgbRed: 0.38, green: 0.68, blue: 0.94, alpha: 1)
 
+
+
     static let keywordRe = try! NSRegularExpression(pattern: "\\b(?:and|break|do|else|elseif|end|false|for|function|goto|if|in|local|nil|not|or|repeat|return|self|then|true|until|while)\\b")
+
     static let numberRe  = try! NSRegularExpression(pattern: "\\b\\d+(?:\\.\\d+)?\\b")
+
     static let fnRe      = try! NSRegularExpression(pattern: "\\b[A-Za-z_][A-Za-z0-9_]*(?=\\s*\\()")
+
     static let stringRe  = try! NSRegularExpression(pattern: "\"([^\"\\\\\\n]|\\\\.)*\"|'([^'\\\\\\n]|\\\\.)*'")
+
     static let commentRe = try! NSRegularExpression(pattern: "--\\[\\[[\\s\\S]*?\\]\\]|--[^\\n]*")
 
+
+
     static func paint(_ range: NSRange, _ color: NSColor, _ f: NSFont, on ts: NSTextStorage) {
+
         if range.location != NSNotFound && NSMaxRange(range) <= ts.length {
+
             ts.addAttribute(.foregroundColor, value: color, range: range)
+
             if f !== font { ts.addAttribute(.font, value: f, range: range) }
+
         }
+
     }
+
+
 
     static func apply(to editor: NSTextView) {
+
         guard let ts = editor.textStorage else { return }
+
         let full = NSRange(location: 0, length: (ts.string as NSString).length)
+
         ts.beginEditing()
+
         ts.setAttributes([.font: font, .foregroundColor: Theme.text], range: full)
+
         keywordRe.enumerateMatches(in: ts.string, options: [], range: full) { m, _, _ in
+
             if let m = m { paint(m.range, keywordColor, font, on: ts) }
+
         }
+
         numberRe.enumerateMatches(in: ts.string, options: [], range: full) { m, _, _ in
+
             if let m = m { paint(m.range, numberColor, font, on: ts) }
+
         }
+
         fnRe.enumerateMatches(in: ts.string, options: [], range: full) { m, _, _ in
+
             if let m = m { paint(m.range, fnColor, font, on: ts) }
+
         }
+
         stringRe.enumerateMatches(in: ts.string, options: [], range: full) { m, _, _ in
+
             if let m = m { paint(m.range, stringColor, font, on: ts) }
+
         }
+
         commentRe.enumerateMatches(in: ts.string, options: [], range: full) { m, _, _ in
+
             if let m = m { paint(m.range, commentColor, italicFont, on: ts) }
+
         }
+
         ts.endEditing()
+
         editor.typingAttributes = [.font: font, .foregroundColor: Theme.text]
+
     }
+
 }
 
+
+
 final class OpexApp: NSObject, NSApplicationDelegate, NSTextViewDelegate,
+
                      NSTableViewDataSource, NSTableViewDelegate,
+
                      NSSearchFieldDelegate, NSControlTextEditingDelegate {
 
+
+
     var window: NSWindow!
+
     var table: NSTableView!
+
     var editor: NSTextView!
+
     var gutter: GutterView!
+
     var status: NSTextField!
+
     var interpLabel: NSTextField!
+
     var tabLabel: NSTextField!
+
     var console: NSTextView!
+
     var btnConsoleTab: TextButton!
+
     var btnProblemsTab: TextButton!
+
     var collapseBtn: TextButton!
+
     var searchField: NSSearchField!
+
     var linkValue: NSTextField!
+
     var autoexecMenuItem: NSMenuItem!
 
+
+
     var allFiles: [String] = []
+
     var files: [String] = []
+
     var linkedPath: String?
+
     var currentFile: String?
+
     var luaPath: String?
+
     var luacPath: String?
 
+
+
     var consoleAttr = NSMutableAttributedString()
+
     var problemsAttr = NSMutableAttributedString()
+
     var activeTab = 0
+
     var collapsed = false
+
     var consoleHeight: NSLayoutConstraint!
 
+
+
     func applicationDidFinishLaunching(_ note: Notification) {
+
         linkedPath = loadLink()
+
         luaPath  = resolveLua()
+
         luacPath = resolveLuac()
+
         buildMenu()
+
         buildWindow()
+
         reloadFiles()
+
         refreshStatus()
+
         window.center()
+
         window.makeKeyAndOrderFront(nil)
+
         NSApp.activate(ignoringOtherApps: true)
 
+
+
         if linkedPath == nil {
+
             openFinderAtRoblox()
+
             if let p = pickFolder() {
+
                 linkedPath = p
+
                 saveLink(p)
+
                 reloadFiles()
+
                 refreshStatus()
+
             }
+
         }
+
+
 
         log("Opex-MacOS console ready.", Theme.dim)
+
         if let lp = luaPath {
+
             log("✔ Lua ready: \(lp) — Execute (⌘R) works out of the box.", Theme.green)
+
         } else {
+
             log("✖ Lua not found. Re-run the installer, or: brew install lua", Theme.red)
+
         }
 
+
+
         if autoexecEnabled() { runAutoexec() }
+
     }
+
+
 
     func applicationShouldTerminateAfterLastWindowClosed(_ sender: NSApplication) -> Bool { true }
 
+
+
     func autoexecDir() -> URL? {
+
         guard let lp = linkedPath else { return nil }
+
         let dir = URL(fileURLWithPath: lp).appendingPathComponent("autoexec", isDirectory: true)
+
         ensureDir(dir)
+
         return dir
+
     }
+
+
 
     func runAutoexec() {
+
         guard let dir = autoexecDir(), let lua = luaPath else { return }
+
         guard let items = try? FM.contentsOfDirectory(atPath: dir.path) else { return }
+
         let scripts = items.filter { $0.hasSuffix(".lua") }.sorted { $0.localizedStandardCompare($1) == .orderedAscending }
+
         guard !scripts.isEmpty else { return }
+
         log("⚡ Auto-executing \(scripts.count) script(s) from autoexec/ …", Theme.accent, bold: true)
+
         for s in scripts {
+
             let url = dir.appendingPathComponent(s)
+
             log("  ▶ \(s)", Theme.dim)
+
             runProcess(lua, [url.path]) { [weak self] out, err, code in
+
                 guard let self = self else { return }
+
                 let o = out.trimmingCharacters(in: .whitespacesAndNewlines)
+
                 let e = err.trimmingCharacters(in: .whitespacesAndNewlines)
+
                 if !o.isEmpty { self.log(o, Theme.text) }
+
                 if !e.isEmpty { self.log(e, Theme.red) }
+
                 self.log(code == 0 ? "  ✔ \(s) finished" : "  ✖ \(s) exited \(code)",
+
                          code == 0 ? Theme.green : Theme.red)
+
             }
+
         }
+
     }
+
+
 
     @objc func toggleAutoexec() {
+
         let now = !autoexecEnabled()
+
         setAutoexec(now)
+
         autoexecMenuItem?.state = now ? .on : .off
+
         log(now ? "⚡ Auto-execute: ON (autoexec/ runs at launch)" : "⚡ Auto-execute: OFF",
+
             Theme.green, bold: true)
+
     }
+
+
 
     @objc func openAutoexecFolder() {
+
         guard let dir = autoexecDir() else { askLinkFirst(); return }
+
         revealInFinder(dir.path)
+
     }
+
+
 
     @objc func openRoblox() {
+
         var appURL: URL?
+
         for p in ["/Applications/Roblox.app", robloxAppUserPath.path] {
+
             if FM.fileExists(atPath: p) { appURL = URL(fileURLWithPath: p); break }
+
         }
+
         if let u = appURL {
+
             if #available(macOS 11.0, *) {
+
                 NSWorkspace.shared.openApplication(at: u, configuration: NSWorkspace.OpenConfiguration()) { _, _ in }
+
             } else {
+
                 NSWorkspace.shared.launchApplication("Roblox")
+
             }
+
             log("→ Roblox launched.", Theme.green, bold: true)
+
         } else {
+
             log("✖ Roblox.app not found in /Applications — install it from roblox.com first.", Theme.red, bold: true)
+
         }
+
     }
+
+
 
     func buildMenu() {
+
         let main = NSMenu()
 
+
+
         let appItem = NSMenuItem()
+
         let appMenu = NSMenu()
+
         appMenu.addItem(NSMenuItem(title: "Quit Opex-MacOS",
+
                                    action: #selector(NSApplication.terminate(_:)), keyEquivalent: "q"))
+
         appItem.submenu = appMenu
+
         main.addItem(appItem)
 
+
+
         let fileItem = NSMenuItem()
+
         let fileMenu = NSMenu(title: "File")
+
         for (t, s, k) in [("New Script", #selector(newScript), "n"),
+
                           ("Save", #selector(saveScript), "s"),
+
                           ("Reveal in Finder", #selector(revealFolder), "r")] {
+
             let it = NSMenuItem(title: t, action: s, keyEquivalent: k)
+
             it.target = self
+
             fileMenu.addItem(it)
+
         }
+
         fileMenu.addItem(.separator())
+
         let link = NSMenuItem(title: "Link Folder…", action: #selector(linkFolder), keyEquivalent: "l")
+
         link.target = self
+
         fileMenu.addItem(link)
+
         fileItem.submenu = fileMenu
+
         main.addItem(fileItem)
 
+
+
         let scriptItem = NSMenuItem()
+
         let scriptMenu = NSMenu(title: "Script")
 
+
+
         let run = NSMenuItem(title: "Execute", action: #selector(execute), keyEquivalent: "r")
+
         run.target = self
+
         scriptMenu.addItem(run)
 
+
+
         let check = NSMenuItem(title: "Check Syntax", action: #selector(checkProblems), keyEquivalent: "p")
+
         check.keyEquivalentModifierMask = [.command, .shift]
+
         check.target = self
+
         scriptMenu.addItem(check)
 
+
+
         scriptMenu.addItem(.separator())
+
+
 
         autoexecMenuItem = NSMenuItem(title: "Auto-Execute on Launch", action: #selector(toggleAutoexec), keyEquivalent: "e")
+
         autoexecMenuItem.keyEquivalentModifierMask = [.command, .shift]
+
         autoexecMenuItem.target = self
+
         autoexecMenuItem.state = autoexecEnabled() ? .on : .off
+
         scriptMenu.addItem(autoexecMenuItem)
 
+
+
         let aeFolder = NSMenuItem(title: "Open Autoexec Folder", action: #selector(openAutoexecFolder), keyEquivalent: "")
+
         aeFolder.target = self
+
         scriptMenu.addItem(aeFolder)
+
+
 
         scriptMenu.addItem(.separator())
 
+
+
         let rbx = NSMenuItem(title: "Open Roblox", action: #selector(openRoblox), keyEquivalent: "o")
+
         rbx.target = self
+
         scriptMenu.addItem(rbx)
 
+
+
         scriptItem.submenu = scriptMenu
+
         main.addItem(scriptItem)
 
+
+
         let helpItem = NSMenuItem()
+
         let helpMenu = NSMenu(title: "Help")
+
         let about = NSMenuItem(title: "About Opex-MacOS", action: #selector(showAbout), keyEquivalent: "")
+
         about.target = self
+
         helpMenu.addItem(about)
+
         helpItem.submenu = helpMenu
+
         main.addItem(helpItem)
 
+
+
         NSApp.mainMenu = main
+
     }
 
+
+
     @objc func showAbout() {
+
         let a = NSAlert()
+
         a.messageText = "Opex-MacOS"
+
         a.informativeText = """
+
         Lua script workspace for your Roblox folder.
+
+
 
         Version 2.2.0 — Swift, no dependencies, bundled Lua.
 
+
+
         • Execute runs scripts with the bundled Lua interpreter.
+
         • Scripts in the autoexec/ folder run automatically at launch.
+
         • Open Roblox launches the Roblox app.
+
         """
+
         a.runModal()
+
     }
+
+
 
     func buildWindow() {
+
         window = NSWindow(contentRect: NSRect(x: 0, y: 0, width: 1100, height: 700),
+
                           styleMask: [.titled, .closable, .miniaturizable, .resizable],
+
                           backing: .buffered, defer: false)
+
         window.title = "Opex-MacOS"
+
         window.appearance = NSAppearance(named: .darkAqua)
+
         window.titlebarAppearsTransparent = true
+
         window.backgroundColor = Theme.bg
+
         window.minSize = NSSize(width: 880, height: 560)
+
         guard let content = window.contentView else { return }
+
         content.wantsLayer = true
+
         content.layer?.backgroundColor = Theme.bg.cgColor
 
+
+
         let toolbar = solidView(Theme.bg)
+
         content.addSubview(toolbar)
+
         toolbar.translatesAutoresizingMaskIntoConstraints = false
 
+
+
         let brand = NSTextField(labelWithString: "Opex-MacOS")
+
         brand.font = NSFont.systemFont(ofSize: 14, weight: .bold)
+
         brand.textColor = Theme.text
+
         toolbar.addSubview(brand)
+
         brand.translatesAutoresizingMaskIntoConstraints = false
 
+
+
         let btnExecute = PillButton(title: "▶  Execute", base: Theme.accent, textColor: .white,
+
                                     target: self, action: #selector(execute), tooltip: "Run the current script (⌘R)")
+
         let btnRoblox  = PillButton(title: "Open Roblox", base: NSColor(srgbRed: 0.13, green: 0.45, blue: 0.26, alpha: 1), textColor: .white,
+
                                     target: self, action: #selector(openRoblox), tooltip: "Launch the Roblox app (⌘O)")
+
         let btnAuto    = PillButton(title: "⚡ Autoexec", base: NSColor(srgbRed: 0.13, green: 0.15, blue: 0.20, alpha: 1), textColor: Theme.text,
+
                                     target: self, action: #selector(openAutoexecFolder), tooltip: "Open the autoexec folder")
+
         let btnNew     = PillButton(title: "✚ New", base: NSColor(srgbRed: 0.13, green: 0.15, blue: 0.20, alpha: 1), textColor: Theme.text,
+
                                     target: self, action: #selector(newScript), tooltip: "New script (⌘N)")
+
         let btnSave    = PillButton(title: "Save", base: NSColor(srgbRed: 0.13, green: 0.15, blue: 0.20, alpha: 1), textColor: Theme.text,
+
                                     target: self, action: #selector(saveScript), tooltip: "Save (⌘S)")
+
         let btnDelete  = PillButton(title: "Delete", base: NSColor(srgbRed: 0.13, green: 0.15, blue: 0.20, alpha: 1), textColor: Theme.text,
+
                                     target: self, action: #selector(deleteScript), tooltip: "Delete selected script")
+
         let btnReveal  = PillButton(title: "Reveal", base: NSColor(srgbRed: 0.13, green: 0.15, blue: 0.20, alpha: 1), textColor: Theme.text,
+
                                     target: self, action: #selector(revealFolder), tooltip: "Reveal folder in Finder")
+
         let btnLink    = PillButton(title: "Link…", base: NSColor(srgbRed: 0.13, green: 0.15, blue: 0.20, alpha: 1), textColor: Theme.text,
+
                                     target: self, action: #selector(linkFolder), tooltip: "Link another folder")
 
+
+
         for b in [btnExecute, btnRoblox, btnAuto, btnNew, btnSave, btnDelete, btnReveal, btnLink] {
+
             toolbar.addSubview(b)
+
             b.translatesAutoresizingMaskIntoConstraints = false
+
         }
+
+
 
         let sidebar = solidView(Theme.sidebar)
+
         content.addSubview(sidebar)
+
         sidebar.translatesAutoresizingMaskIntoConstraints = false
 
+
+
         let sideBorder = solidView(Theme.border)
+
         content.addSubview(sideBorder)
+
         sideBorder.translatesAutoresizingMaskIntoConstraints = false
 
+
+
         let sideTitle = NSTextField(labelWithString: "SCRIPTS")
-        sideTitle.font = NSFont.systemFont(ofSize: 10, weight: .bold)
+
+        sideTitle.font = NSFont.systemFont(ofSize: 10.5, weight: .bold)
+
         sideTitle.textColor = Theme.dim
-        sidebar.addSubview(sideTitle)
-        sideTitle.translatesAutoresizingMaskIntoConstraints = false
 
-        searchField = NSSearchField()
-        searchField.placeholderString = "Filter…"
-        searchField.delegate = self
-        sidebar.addSubview(searchField)
-        searchField.translatesAutoresizingMaskIntoConstraints = false
-
-        let scroll = NSScrollView()
-        scroll.hasVerticalScroller = true
-        scroll.drawsBackground = false
-
-        table = NSTableView()
-        let col = NSTableColumn(identifier: NSUserInterfaceItemIdentifier("col"))
-        table.addTableColumn(col)
-        table.headerView = nil
-        table.backgroundColor = .clear
-        table.dataSource = self
-        table.delegate = self
-        table.selectionHighlightStyle = .regular
-        scroll.documentView = table
-        sidebar.addSubview(scroll)
-        scroll.translatesAutoresizingMaskIntoConstraints = false
-
-        let mainView = solidView(Theme.panel)
-        content.addSubview(mainView)
-        mainView.translatesAutoresizingMaskIntoConstraints = false
-
-        let tabHeader = solidView(Theme.panel)
-        mainView.addSubview(tabHeader)
-        tabHeader.translatesAutoresizingMaskIntoConstraints = false
-
-        tabLabel = NSTextField(labelWithString: "Untitled.lua")
-        tabLabel.font = NSFont.systemFont(ofSize: 12, weight: .semibold)
-        tabLabel.textColor = Theme.text
-        tabHeader.addSubview(tabLabel)
-        tabLabel.translatesAutoresizingMaskIntoConstraints = false
-
-        let tabBorder = solidView(Theme.border)
-        tabHeader.addSubview(tabBorder)
-        tabBorder.translatesAutoresizingMaskIntoConstraints = false
-
-        let editorScroll = NSScrollView()
-        editorScroll.hasVerticalScroller = true
-        editorScroll.hasHorizontalScroller = true
-
-        editor = NSTextView()
-        editor.backgroundColor = Theme.editor
-        editor.textColor = Theme.text
-        editor.font = LuaHighlight.font
-        editor.isRichText = false
-        editor.allowsUndo = true
-        editor.delegate = self
-        editor.isHorizontallyResizable = true
-        editor.autoresizingMask = [.width, .height]
-        editor.textContainer?.containerSize = NSSize(width: CGFloat.greatestFiniteMagnitude, height: CGFloat.greatestFiniteMagnitude)
-        editor.textContainer?.widthTracksTextView = false
-
-        gutter = GutterView(textView: editor)
-        let gutterScroll = NSScrollView()
-        gutterScroll.documentView = gutter
-        gutterScroll.drawsBackground = false
-
-        let editorContainer = NSView()
-        editorContainer.addSubview(gutter)
-        editorContainer.addSubview(editorScroll)
-        gutter.translatesAutoresizingMaskIntoConstraints = false
-        editorScroll.translatesAutoresizingMaskIntoConstraints = false
-        editorScroll.documentView = editor
-
-        mainView.addSubview(editorContainer)
-        editorContainer.translatesAutoresizingMaskIntoConstraints = false
-
-        let consolePanel = solidView(Theme.panel)
-        mainView.addSubview(consolePanel)
-        consolePanel.translatesAutoresizingMaskIntoConstraints = false
-
-        let consoleHeader = solidView(Theme.panel)
-        consolePanel.addSubview(consoleHeader)
-        consoleHeader.translatesAutoresizingMaskIntoConstraints = false
-
-        let cBorder = solidView(Theme.border)
-        consoleHeader.addSubview(cBorder)
-        cBorder.translatesAutoresizingMaskIntoConstraints = false
-
-        btnConsoleTab  = TextButton("OUTPUT", normal: Theme.dim, active: Theme.accent, target: self, action: #selector(showConsoleTab))
-        btnProblemsTab = TextButton("PROBLEMS", normal: Theme.dim, active: Theme.accent, target: self, action: #selector(showProblemsTab))
-        btnConsoleTab.setActive(true)
-
-        collapseBtn = TextButton("", normal: Theme.dim, active: Theme.dim, target: self, action: #selector(toggleCollapse))
-        collapseBtn.setGlyph("▼")
-
-        let btnClear = PillButton(title: "Clear", base: .clear, textColor: Theme.dim,
-                                  target: self, action: #selector(clearConsole), tooltip: "Clear log")
-
-        for v in [btnConsoleTab, btnProblemsTab, collapseBtn, btnClear] {
-            consoleHeader.addSubview(v)
-            v.translatesAutoresizingMaskIntoConstraints = false
-        }
-
-        let consoleScroll = NSScrollView()
-        consoleScroll.hasVerticalScroller = true
-
-        console = NSTextView()
-        console.backgroundColor = Theme.panel
-        console.isEditable = false
-        console.isSelectable = true
-        console.font = NSFont.monospacedSystemFont(ofSize: 11.5, weight: .regular)
-        consoleScroll.documentView = console
-        consolePanel.addSubview(consoleScroll)
-        consoleScroll.translatesAutoresizingMaskIntoConstraints = false
-
-        let statusBar = solidView(Theme.bg)
-        content.addSubview(statusBar)
-        statusBar.translatesAutoresizingMaskIntoConstraints = false
-
-        let statusBorder = solidView(Theme.border)
-        statusBar.addSubview(statusBorder)
-        statusBorder.translatesAutoresizingMaskIntoConstraints = false
-
-        status = NSTextField(labelWithString: "Ready")
-        status.font = NSFont.systemFont(ofSize: 11, weight: .regular)
-        status.textColor = Theme.dim
-
-        interpLabel = NSTextField(labelWithString: "Lua runtime")
-        interpLabel.font = NSFont.systemFont(ofSize: 11, weight: .medium)
-        interpLabel.textColor = Theme.dim
-
-        linkValue = NSTextField(labelWithString: "Not linked")
-        linkValue.font = NSFont.systemFont(ofSize: 11, weight: .regular)
-        linkValue.textColor = Theme.dim
-
-        for v in [status, interpLabel, linkValue] {
-            statusBar.addSubview(v)
-            v.translatesAutoresizingMaskIntoConstraints = false
-        }
-
-        consoleHeight = consolePanel.heightAnchor.constraint(equalToConstant: 160)
-
-        NSLayoutConstraint.activate([
-            toolbar.topAnchor.constraint(equalTo: content.topAnchor),
-            toolbar.leadingAnchor.constraint(equalTo: content.leadingAnchor),
-            toolbar.trailingAnchor.constraint(equalTo: content.trailingAnchor),
-            toolbar.heightAnchor.constraint(equalToConstant: 44),
-
-            brand.leadingAnchor.constraint(equalTo: toolbar.leadingAnchor, constant: 16),
-            brand.centerYAnchor.constraint(equalTo: toolbar.centerYAnchor),
-
-            btnExecute.leadingAnchor.constraint(equalTo: brand.trailingAnchor, constant: 20),
-            btnExecute.centerYAnchor.constraint(equalTo: toolbar.centerYAnchor),
-
-            btnRoblox.leadingAnchor.constraint(equalTo: btnExecute.trailingAnchor, constant: 8),
-            btnRoblox.centerYAnchor.constraint(equalTo: toolbar.centerYAnchor),
-
-            btnAuto.leadingAnchor.constraint(equalTo: btnRoblox.trailingAnchor, constant: 8),
-            btnAuto.centerYAnchor.constraint(equalTo: toolbar.centerYAnchor),
-
-            btnNew.leadingAnchor.constraint(equalTo: btnAuto.trailingAnchor, constant: 16),
-            btnNew.centerYAnchor.constraint(equalTo: toolbar.centerYAnchor),
-
-            btnSave.leadingAnchor.constraint(equalTo: btnNew.trailingAnchor, constant: 6),
-            btnSave.centerYAnchor.constraint(equalTo: toolbar.centerYAnchor),
-
-            btnDelete.leadingAnchor.constraint(equalTo: btnSave.trailingAnchor, constant: 6),
-            btnDelete.centerYAnchor.constraint(equalTo: toolbar.centerYAnchor),
-
-            btnReveal.leadingAnchor.constraint(equalTo: btnDelete.trailingAnchor, constant: 6),
-            btnReveal.centerYAnchor.constraint(equalTo: toolbar.centerYAnchor),
-
-            btnLink.leadingAnchor.constraint(equalTo: btnReveal.trailingAnchor, constant: 6),
-            btnLink.centerYAnchor.constraint(equalTo: toolbar.centerYAnchor),
-
-            sidebar.topAnchor.constraint(equalTo: toolbar.bottomAnchor),
-            sidebar.leadingAnchor.constraint(equalTo: content.leadingAnchor),
-            sidebar.bottomAnchor.constraint(equalTo: statusBar.topAnchor),
-            sidebar.widthAnchor.constraint(equalToConstant: 220),
-
-            sideBorder.topAnchor.constraint(equalTo: sidebar.topAnchor),
-            sideBorder.trailingAnchor.constraint(equalTo: sidebar.trailingAnchor),
-            sideBorder.bottomAnchor.constraint(equalTo: sidebar.bottomAnchor),
-            sideBorder.widthAnchor.constraint(equalToConstant: 1),
-
-            sideTitle.topAnchor.constraint(equalTo: sidebar.topAnchor, constant: 12),
-            sideTitle.leadingAnchor.constraint(equalTo: sidebar.leadingAnchor, constant: 14),
-
-            searchField.topAnchor.constraint(equalTo: sideTitle.bottomAnchor, constant: 8),
-            searchField.leadingAnchor.constraint(equalTo: sidebar.leadingAnchor, constant: 10),
-            searchField.trailingAnchor.constraint(equalTo: sidebar.trailingAnchor, constant: -10),
-
-            scroll.topAnchor.constraint(equalTo: searchField.bottomAnchor, constant: 8),
-            scroll.leadingAnchor.constraint(equalTo: sidebar.leadingAnchor),
-            scroll.trailingAnchor.constraint(equalTo: sidebar.trailingAnchor),
-            scroll.bottomAnchor.constraint(equalTo: sidebar.bottomAnchor),
-
-            mainView.topAnchor.constraint(equalTo: toolbar.bottomAnchor),
-            mainView.leadingAnchor.constraint(equalTo: sidebar.trailingAnchor),
-            mainView.trailingAnchor.constraint(equalTo: content.trailingAnchor),
-            mainView.bottomAnchor.constraint(equalTo: statusBar.topAnchor),
-
-            tabHeader.topAnchor.constraint(equalTo: mainView.topAnchor),
-            tabHeader.leadingAnchor.constraint(equalTo: mainView.leadingAnchor),
-            tabHeader.trailingAnchor.constraint(equalTo: mainView.trailingAnchor),
-            tabHeader.heightAnchor.constraint(equalToConstant: 32),
-
-            tabLabel.leadingAnchor.constraint(equalTo: tabHeader.leadingAnchor, constant: 14),
-            tabLabel.centerYAnchor.constraint(equalTo: tabHeader.centerYAnchor),
-
-            tabBorder.leadingAnchor.constraint(equalTo: tabHeader.leadingAnchor),
-            tabBorder.trailingAnchor.constraint(equalTo: tabHeader.trailingAnchor),
-            tabBorder.bottomAnchor.constraint(equalTo: tabHeader.bottomAnchor),
-            tabBorder.heightAnchor.constraint(equalToConstant: 1),
-
-            editorContainer.topAnchor.constraint(equalTo: tabHeader.bottomAnchor),
-            editorContainer.leadingAnchor.constraint(equalTo: mainView.leadingAnchor),
-            editorContainer.trailingAnchor.constraint(equalTo: mainView.trailingAnchor),
-            editorContainer.bottomAnchor.constraint(equalTo: consolePanel.topAnchor),
-
-            gutter.topAnchor.constraint(equalTo: editorContainer.topAnchor),
-            gutter.leadingAnchor.constraint(equalTo: editorContainer.leadingAnchor),
-            gutter.bottomAnchor.constraint(equalTo: editorContainer.bottomAnchor),
-            gutter.widthAnchor.constraint(equalToConstant: 44),
-
-            editorScroll.topAnchor.constraint(equalTo: editorContainer.topAnchor),
-            editorScroll.leadingAnchor.constraint(equalTo: gutter.trailingAnchor),
-            editorScroll.trailingAnchor.constraint(equalTo: editorContainer.trailingAnchor),
-            editorScroll.bottomAnchor.constraint(equalTo: editorContainer.bottomAnchor),
-
-            consolePanel.leadingAnchor.constraint(equalTo: mainView.leadingAnchor),
-            consolePanel.trailingAnchor.constraint(equalTo: mainView.trailingAnchor),
-            consolePanel.bottomAnchor.constraint(equalTo: mainView.bottomAnchor),
-            consoleHeight,
-
-            consoleHeader.topAnchor.constraint(equalTo: consolePanel.topAnchor),
-            consoleHeader.leadingAnchor.constraint(equalTo: consolePanel.leadingAnchor),
-            consoleHeader.trailingAnchor.constraint(equalTo: consolePanel.trailingAnchor),
-            consoleHeader.heightAnchor.constraint(equalToConstant: 28),
-
-            cBorder.leadingAnchor.constraint(equalTo: consoleHeader.leadingAnchor),
-            cBorder.trailingAnchor.constraint(equalTo: consoleHeader.trailingAnchor),
-            cBorder.topAnchor.constraint(equalTo: consoleHeader.topAnchor),
-            cBorder.heightAnchor.constraint(equalToConstant: 1),
-
-            btnConsoleTab.leadingAnchor.constraint(equalTo: consoleHeader.leadingAnchor, constant: 12),
-            btnConsoleTab.centerYAnchor.constraint(equalTo: consoleHeader.centerYAnchor),
-
-            btnProblemsTab.leadingAnchor.constraint(equalTo: btnConsoleTab.trailingAnchor, constant: 4),
-            btnProblemsTab.centerYAnchor.constraint(equalTo: consoleHeader.centerYAnchor),
-
-            collapseBtn.leadingAnchor.constraint(equalTo: btnProblemsTab.trailingAnchor, constant: 8),
-            collapseBtn.centerYAnchor.constraint(equalTo: consoleHeader.centerYAnchor),
-
-            btnClear.trailingAnchor.constraint(equalTo: consoleHeader.trailingAnchor, constant: -8),
-            btnClear.centerYAnchor.constraint(equalTo: consoleHeader.centerYAnchor),
-
-            consoleScroll.topAnchor.constraint(equalTo: consoleHeader.bottomAnchor),
-            consoleScroll.leadingAnchor.constraint(equalTo: consolePanel.leadingAnchor, constant: 8),
-            consoleScroll.trailingAnchor.constraint(equalTo: consolePanel.trailingAnchor, constant: -8),
-            consoleScroll.bottomAnchor.constraint(equalTo: consolePanel.bottomAnchor, constant: -4),
-
-            statusBar.leadingAnchor.constraint(equalTo: content.leadingAnchor),
-            statusBar.trailingAnchor.constraint(equalTo: content.trailingAnchor),
-            statusBar.bottomAnchor.constraint(equalTo: content.bottomAnchor),
-            statusBar.heightAnchor.constraint(equalToConstant: 22),
-
-            statusBorder.topAnchor.constraint(equalTo: statusBar.topAnchor),
-            statusBorder.leadingAnchor.constraint(equalTo: statusBar.leadingAnchor),
-            statusBorder.trailingAnchor.constraint(equalTo: statusBar.trailingAnchor),
-            statusBorder.heightAnchor.constraint(equalToConstant: 1),
-
-            status.leadingAnchor.constraint(equalTo: statusBar.leadingAnchor, constant: 12),
-            status.centerYAnchor.constraint(equalTo: statusBar.centerYAnchor),
-
-            interpLabel.centerXAnchor.constraint(equalTo: statusBar.centerXAnchor),
-            interpLabel.centerYAnchor.constraint(equalTo: statusBar.centerYAnchor),
-
-            linkValue.trailingAnchor.constraint(equalTo: statusBar.trailingAnchor, constant: -12),
-            linkValue.centerYAnchor.constraint(equalTo: statusBar.centerYAnchor)
-        ])
-    }
-
-    func reloadFiles() {
-        guard let p = linkedPath else { allFiles = []; files = []; table.reloadData(); return }
-        let url = URL(fileURLWithPath: p)
-        let items = (try? FM.contentsOfDirectory(atPath: url.path)) ?? []
-        allFiles = items.filter { $0.hasSuffix(".lua") }.sorted { $0.localizedStandardCompare($1) == .orderedAscending }
-        applyFilter()
-    }
-
-    func applyFilter() {
-        let q = searchField.stringValue.trimmingCharacters(in: .whitespacesAndNewlines)
-        files = q.isEmpty ? allFiles : allFiles.filter { $0.localizedCaseInsensitiveContains(q) }
-        table.reloadData()
-    }
-
-    func controlTextDidChange(_ obj: Notification) { applyFilter() }
-
-    func textDidChange(_ notification: Notification) {
-        LuaHighlight.apply(to: editor)
-        gutter.refresh()
-    }
-
-    func numberOfRows(in tableView: NSTableView) -> Int { files.count }
-
-    func tableView(_ tableView: NSTableView, viewFor tableColumn: NSTableColumn?, row: Int) -> NSView? {
-        let id = NSUserInterfaceItemIdentifier("cell")
-        var cell = tableView.makeView(withIdentifier: id, owner: nil) as? NSTableCellView
-        if cell == nil {
-            cell = NSTableCellView()
-            cell?.identifier = id
-            let tf = NSTextField(labelWithString: "")
-            tf.font = NSFont.systemFont(ofSize: 12.5)
-            tf.textColor = Theme.text
-            cell?.addSubview(tf)
-            cell?.textField = tf
-            tf.translatesAutoresizingMaskIntoConstraints = false
-            NSLayoutConstraint.activate([
-                tf.leadingAnchor.constraint(equalTo: cell!.leadingAnchor, constant: 14),
-                tf.trailingAnchor.constraint(equalTo: cell!.trailingAnchor, constant: -10),
-                tf.centerYAnchor.constraint(equalTo: cell!.centerYAnchor)
-            ])
-        }
-        cell?.textField?.stringValue = files[row]
-        return cell
-    }
-
-    func tableViewSelectionDidChange(_ notification: Notification) {
-        let r = table.selectedRow
-        guard r >= 0 && r < files.count else { return }
-        openFile(files[r])
-    }
-
-    func openFile(_ name: String) {
-        guard let p = linkedPath else { return }
-        currentFile = name
-        tabLabel.stringValue = name
-        let url = URL(fileURLWithPath: p).appendingPathComponent(name)
-        let text = (try? String(contentsOf: url, encoding: .utf8)) ?? ""
-        editor.string = text
-        LuaHighlight.apply(to: editor)
-        gutter.refresh()
-        status.stringValue = "Opened \(name)"
-    }
-
-    @objc func newScript() {
-        guard let p = linkedPath else { askLinkFirst(); return }
-        let alert = NSAlert()
-        alert.messageText = "New Script"
-        alert.informativeText = "Enter script name (e.g. main.lua):"
-        let input = NSTextField(frame: NSRect(x: 0, y: 0, width: 240, height: 24))
-        input.stringValue = "script.lua"
-        alert.accessoryView = input
-        alert.addButton(withTitle: "Create")
-        alert.addButton(withTitle: "Cancel")
-        if alert.runModal() == .alertFirstButtonReturn {
-            var name = input.stringValue.trimmingCharacters(in: .whitespacesAndNewlines)
-            if name.isEmpty { return }
-            if !name.hasSuffix(".lua") { name += ".lua" }
-            let url = URL(fileURLWithPath: p).appendingPathComponent(name)
-            try? "-- \(name)\nprint(\"Hello from \(name)\")\n".write(to: url, atomically: true, encoding: .utf8)
-            reloadFiles()
-            if let idx = files.firstIndex(of: name) {
-                table.selectRowIndexes(IndexSet(integer: idx), byExtendingSelection: false)
-            }
-        }
-    }
-
-    @objc func saveScript() {
-        guard let p = linkedPath, let f = currentFile else { return }
-        let url = URL(fileURLWithPath: p).appendingPathComponent(f)
-        try? editor.string.write(to: url, atomically: true, encoding: .utf8)
-        status.stringValue = "Saved \(f)"
-    }
-
-    @objc func deleteScript() {
-        guard let p = linkedPath, let f = currentFile else { return }
-        let alert = NSAlert()
-        alert.messageText = "Delete \(f)?"
-        alert.informativeText = "This action cannot be undone."
-        alert.addButton(withTitle: "Delete")
-        alert.addButton(withTitle: "Cancel")
-        if alert.runModal() == .alertFirstButtonReturn {
-            let url = URL(fileURLWithPath: p).appendingPathComponent(f)
-            try? FM.removeItem(at: url)
-            currentFile = nil
-            tabLabel.stringValue = "Untitled.lua"
-            editor.string = ""
-            reloadFiles()
-        }
-    }
-
-    @objc func execute() {
-        saveScript()
-        guard let lua = luaPath else {
-            log("✖ Execution failed: No Lua interpreter configured.", Theme.red, bold: true)
-            return
-        }
-        guard let p = linkedPath, let f = currentFile else {
-            log("✖ Select or create a script first.", Theme.red)
-            return
-        }
-        let url = URL(fileURLWithPath: p).appendingPathComponent(f)
-        log("▶ Executing \(f) …", Theme.accent, bold: true)
-        runProcess(lua, [url.path]) { [weak self] out, err, code in
-            guard let self = self else { return }
-            let o = out.trimmingCharacters(in: .whitespacesAndNewlines)
-            let e = err.trimmingCharacters(in: .whitespacesAndNewlines)
-            if !o.isEmpty { self.log(o, Theme.text) }
-            if !e.isEmpty { self.log(e, Theme.red) }
-            self.log(code == 0 ? "✔ Process finished with code 0" : "✖ Process exited with code \(code)",
-                     code == 0 ? Theme.green : Theme.red)
-        }
-    }
-
-    @objc func checkProblems() {
-        saveScript()
-        guard let luac = luacPath else {
-            log("✖ Syntax check failed: luac not found.", Theme.red)
-            return
-        }
-        guard let p = linkedPath, let f = currentFile else { return }
-        let url = URL(fileURLWithPath: p).appendingPathComponent(f)
-        runProcess(luac, ["-p", url.path]) { [weak self] _, err, code in
-            guard let self = self else { return }
-            self.problemsAttr = NSMutableAttributedString()
-            if code == 0 {
-                self.appendAttr(self.problemsAttr, "✔ No syntax errors detected in \(f)\n", Theme.green, bold: true)
-            } else {
-                let cleanErr = err.replacingOccurrences(of: url.path + ":", with: "Line ")
-                self.appendAttr(self.problemsAttr, "✖ Syntax error in \(f):\n\(cleanErr)\n", Theme.red, bold: true)
-            }
-            if self.activeTab == 1 { self.renderConsole() }
-            self.showProblemsTab()
-        }
-    }
-
-    @objc func revealFolder() {
-        guard let p = linkedPath else { askLinkFirst(); return }
-        revealInFinder(p)
-    }
-
-    @objc func linkFolder() {
-        if let p = pickFolder() {
-            linkedPath = p
-            saveLink(p)
-            reloadFiles()
-            refreshStatus()
-        }
-    }
-
-    func askLinkFirst() {
-        openFinderAtRoblox()
-        linkFolder()
-    }
-
-    func openFinderAtRoblox() {
-        ensureDir(robloxClientFolder)
-        revealInFinder(robloxClientFolder.path)
-    }
-
-    func pickFolder() -> String? {
-        let open = NSOpenPanel()
-        open.title = "Select your Roblox workspace folder"
-        open.prompt = "Link Folder"
-        open.canChooseDirectories = true
-        open.canChooseFiles = false
-        open.allowsMultipleSelection = false
-        open.directoryURL = robloxClientFolder
-        return open.runModal() == .OK ? open.url?.path : nil
-    }
-
-    func refreshStatus() {
-        if let p = linkedPath {
-            let name = (p as NSString).lastPathComponent
-            linkValue.stringValue = "Linked: \(name)"
-        } else {
-            linkValue.stringValue = "Not linked"
-        }
-        if let lp = luaPath {
-            let name = (lp as NSString).lastPathComponent
-            interpLabel.stringValue = "Lua: \(name)"
-        } else {
-            interpLabel.stringValue = "Lua: Missing"
-        }
-    }
-
-    func log(_ text: String, _ color: NSColor, bold: Bool = false) {
-        appendAttr(consoleAttr, text + "\n", color, bold: bold)
-        if activeTab == 0 { renderConsole() }
-    }
-
-    func appendAttr(_ target: NSMutableAttributedString, _ text: String, _ color: NSColor, bold: Bool = false) {
-        let f = bold ? NSFont.monospacedSystemFont(ofSize: 11.5, weight: .bold)
-                     : NSFont.monospacedSystemFont(ofSize: 11.5, weight: .regular)
-        let attrs: [NSAttributedString.Key: Any] = [.foregroundColor: color, .font: f]
-        target.append(NSAttributedString(string: text, attributes: attrs))
-    }
-
-    func renderConsole() {
-        console.textStorage?.setAttributedString(activeTab == 0 ? consoleAttr : problemsAttr)
-        console.scrollToEndOfDocument(nil)
-    }
-
-    @objc func showConsoleTab() {
-        activeTab = 0
-        btnConsoleTab.setActive(true)
-        btnProblemsTab.setActive(false)
-        renderConsole()
-    }
-
-    @objc func showProblemsTab() {
-        activeTab = 1
-        btnConsoleTab.setActive(false)
-        btnProblemsTab.setActive(true)
-        renderConsole()
-    }
-
-    @objc func clearConsole() {
-        if activeTab == 0 { consoleAttr = NSMutableAttributedString() }
-        else { problemsAttr = NSMutableAttributedString() }
-        renderConsole()
-    }
-
-    @objc func toggleCollapse() {
-        collapsed.toggle()
-        consoleHeight.constant = collapsed ? 28 : 160
-        collapseBtn.setGlyph(collapsed ? "▲" : "▼")
-        NSAnimationContext.runAnimationGroup { ctx in
-            ctx.duration = 0.15
-            window.contentView?.layoutSubtreeIfNeeded()
-        }
-    }
-}
-
-let app = NSApplication.shared
-let delegate = OpexApp()
-app.delegate = delegate
-app.run()
-SWIFT_EOF
-
-set_progress 45
-
-# ============================================================
-#  Compile Architecture Outputs
-# ============================================================
-step_msg "${YELLOW}[*] Step 4/6 — Compiling Native C++ Executor Injector...${NC}"
-clang++ -std=c++17 -arch arm64 -o "$SCRIPT_DIR/src/executor" "$SCRIPT_DIR/src/macos_executor.cpp" -framework CoreFoundation -ldl
-set_progress 65
-
-step_msg "${YELLOW}[*] Step 5/6 — Compiling Swift Frontend App Bundle...${NC}"
-mkdir -p "$APP_PATH/Contents/MacOS"
-mkdir -p "$APP_PATH/Contents/Resources"
-
-cat > "$APP_PATH/Contents/Info.plist" <<PLIST_EOF
-<?xml version="1.0" encoding="UTF-8"?>
-<!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
-<plist version="1.0">
-<dict>
-    <key>CFBundleExecutable</key>
-    <string>Opex-MacOS</string>
-    <key>CFBundleIdentifier</key>
-    <string>com.opex.macos</string>
-    <key>CFBundleName</key>
-    <string>Opex-MacOS</string>
-    <key>CFBundlePackageType</key>
-    <string>APPL</string>
-    <key>CFBundleShortVersionString</key>
-    <string>$VERSION</string>
-    <key>LSMinimumSystemVersion</key>
-    <string>11.0</string>
-
-    <key>NSHighResolutionCapable</key>
-    <true/>
-</dict>
-</plist>
-PLIST_EOF
-
-swiftc -O "$SCRIPT_DIR/src/main.swift" -o "$APP_PATH/Contents/MacOS/Opex-MacOS"
-set_progress 85
-
-# ============================================================
-#  Bundle Portable Lua Runtime
-# ============================================================
-step_msg "${YELLOW}[*] Step 6/6 — Bundling local Lua environment...${NC}"
-mkdir -p "$OPEX_SUPPORT/bin"
-
-if command -v lua >/dev/null 2>&1; then
-    cp "$(which lua)" "$OPEX_SUPPORT/bin/lua" 2>/dev/null || true
-fi
-if command -v luac >/dev/null 2>&1; then
-    cp "$(which luac)" "$OPEX_SUPPORT/bin/luac" 2>/dev/null || true
-fi
-
-# Copy native executor binary to support paths
-cp "$SCRIPT_DIR/src/executor" "$OPEX_SUPPORT/bin/executor" 2>/dev/null || true
-
-set_progress 100
-printf "\r\033[K"
-echo ""
-echo -e "${GREEN}════════════════════════════════════════════════════════════${NC}"
-echo -e "${GREEN}${BOLD}✔ Opex-MacOS v$VERSION successfully built!${NC}"
-echo -e "${GREEN}════════════════════════════════════════════════════════════${NC}"
-echo -e "  App Bundle:     ${CYAN}$APP_PATH${NC}"
-echo -e "  C++ Injector:   ${CYAN}$OPEX_SUPPORT/bin/executor${NC}"
-echo ""
-echo -e "Run using: ${BOLD}open \"$APP_PATH\"${NC}"
-echo ""
+        sidebar
