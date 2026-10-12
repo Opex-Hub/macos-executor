@@ -336,7 +336,7 @@ mkdir -p "$MACOS_DIR"
 mkdir -p "$RESOURCES_DIR"
 
 echo "Creating Info.plist..."
-cat > "$CONTENTS_DIR/Info.plist" << EOF
+cat > "$CONTENTS_DIR/Info.plist" << 'EOF'
 <?xml version="1.0" encoding="UTF-8"?>
 <!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
 <plist version="1.0">
@@ -345,8 +345,6 @@ cat > "$CONTENTS_DIR/Info.plist" << EOF
     <string>English</string>
     <key>CFBundleExecutable</key>
     <string>launcher</string>
-    <key>CFBundleIconFile</key>
-    <string>app.icns</string>
     <key>CFBundleIdentifier</key>
     <string>com.freefire.cheatui</string>
     <key>CFBundleInfoDictionaryVersion</key>
@@ -372,20 +370,49 @@ EOF
 echo "Creating launcher script..."
 cat > "$MACOS_DIR/launcher" << 'EOF'
 #!/bin/bash
+# Redirect all output to a log file so silent crashes can be debugged
+LOG="$HOME/Library/Logs/FreeFireCheatUI.log"
+mkdir -p "$(dirname "$LOG")"
+exec >> "$LOG" 2>&1
+
+echo "=== Launch at $(date) ==="
+
 DIR="$( cd "$( dirname "${BASH_SOURCE[0]}" )" && pwd )"
 APP_ROOT="$(dirname "$DIR")"
-cd "$APP_ROOT"
+cd "$APP_ROOT" || { echo "Cannot cd to $APP_ROOT"; exit 1; }
 
-# Check if Python 3 is installed
-if ! command -v python3 &> /dev/null; then
-    echo "Error: Python 3 is required to run this application."
-    echo "Please install Python 3 from https://www.python.org/downloads/"
-    osascript -e 'display dialog "Python 3 is required to run this application. Please install Python 3 from https://www.python.org/downloads/" with icon stop'
+# Find python3 in common locations (GUI apps don't inherit shell PATH)
+PYTHON=""
+for candidate in \
+    /opt/homebrew/bin/python3 \
+    /usr/local/bin/python3 \
+    /usr/bin/python3 \
+    "$(command -v python3 2>/dev/null)"
+do
+    if [ -x "$candidate" ]; then
+        PYTHON="$candidate"
+        break
+    fi
+done
+
+if [ -z "$PYTHON" ]; then
+    echo "Python 3 not found in any known location."
+    osascript -e 'display dialog "Python 3 is required. Install it from https://www.python.org/downloads/ or via Homebrew (brew install python-tk)." with icon stop'
     exit 1
 fi
 
-# Run the application
-python3 "./freefire_gui.py"
+echo "Using Python: $PYTHON"
+"$PYTHON" --version
+
+# Check tkinter availability
+if ! "$PYTHON" -c "import tkinter" 2>/dev/null; then
+    echo "tkinter not available for $PYTHON"
+    osascript -e 'display dialog "tkinter is not installed for this Python. If you used Homebrew, run: brew install python-tk" with icon stop'
+    exit 1
+fi
+
+# Run the GUI
+exec "$PYTHON" "$APP_ROOT/freefire_gui.py"
 EOF
 
 chmod +x "$MACOS_DIR/launcher"
@@ -395,15 +422,18 @@ cat > "$APP_DIR/run.sh" << 'EOF'
 #!/bin/bash
 cd "$(dirname "$0")"
 
-# Check if Python 3 is installed
-if ! command -v python3 &> /dev/null; then
-    echo "Error: Python 3 is required to run this application."
-    echo "Please install Python 3 from https://www.python.org/downloads/"
+PYTHON=""
+for candidate in /opt/homebrew/bin/python3 /usr/local/bin/python3 /usr/bin/python3 "$(command -v python3 2>/dev/null)"; do
+    [ -x "$candidate" ] && PYTHON="$candidate" && break
+done
+
+if [ -z "$PYTHON" ]; then
+    echo "Error: Python 3 not found. Install from https://www.python.org/downloads/ or run: brew install python-tk"
     exit 1
 fi
 
 echo "Starting Free Fire Pro Max Plus Ultra..."
-python3 "./freefire_gui.py"
+exec "$PYTHON" "./freefire_gui.py"
 EOF
 
 chmod +x "$APP_DIR/run.sh"
@@ -427,6 +457,9 @@ echo "2. Open Terminal and navigate to: $APP_DIR"
 echo "3. Run: ./run.sh"
 echo ""
 echo "To uninstall, run: $APP_DIR/uninstall.sh"
+echo ""
+echo "If the app crashes on launch, check the log:"
+echo "  cat ~/Library/Logs/FreeFireCheatUI.log"
 echo ""
 echo "Note: This is for educational purposes only."
 echo "Actual cheat functionality is not implemented."
