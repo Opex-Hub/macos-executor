@@ -53,20 +53,34 @@ if ! command -v mono &> /dev/null; then
         brew install mono
     else
         echo "Homebrew installation failed. Attempting direct Mono installation..."
-        # Direct download and install of Mono
-        curl -O https://download.mono-project.com/archive/mdk-latest.pkg
-        sudo installer -pkg mdk-latest.pkg -target /
-        rm mdk-latest.pkg
+        echo "Downloading Mono installer... (this may take several minutes)"
         
-        # Add Mono to PATH
-        export PATH="/Library/Frameworks/Mono.framework/Versions/Current/bin:$PATH"
-        export PKG_CONFIG_PATH="/Library/Frameworks/Mono.framework/Versions/Current/lib/pkgconfig"
+        # Download with progress bar and timeout
+        if command -v wget &> /dev/null; then
+            wget --progress=bar:force https://download.mono-project.com/archive/mdk-latest.pkg -O mdk-latest.pkg
+        else
+            # Use curl with progress bar
+            curl -# -L https://download.mono-project.com/archive/mdk-latest.pkg -o mdk-latest.pkg
+        fi
         
-        # Add to profile files for persistence
-        echo 'export PATH="/Library/Frameworks/Mono.framework/Versions/Current/bin:$PATH"' >> ~/.bash_profile 2>/dev/null || true
-        echo 'export PKG_CONFIG_PATH="/Library/Frameworks/Mono.framework/Versions/Current/lib/pkgconfig"' >> ~/.bash_profile 2>/dev/null || true
-        echo 'export PATH="/Library/Frameworks/Mono.framework/Versions/Current/bin:$PATH"' >> ~/.zshrc 2>/dev/null || true
-        echo 'export PKG_CONFIG_PATH="/Library/Frameworks/Mono.framework/Versions/Current/lib/pkgconfig"' >> ~/.zshrc 2>/dev/null || true
+        # Check if download was successful
+        if [[ -f "mdk-latest.pkg" ]]; then
+            echo "Installing Mono framework..."
+            sudo installer -pkg mdk-latest.pkg -target /
+            rm mdk-latest.pkg
+            
+            # Add Mono to PATH
+            export PATH="/Library/Frameworks/Mono.framework/Versions/Current/bin:$PATH"
+            export PKG_CONFIG_PATH="/Library/Frameworks/Mono.framework/Versions/Current/lib/pkgconfig"
+            
+            # Add to profile files for persistence
+            echo 'export PATH="/Library/Frameworks/Mono.framework/Versions/Current/bin:$PATH"' >> ~/.bash_profile 2>/dev/null || true
+            echo 'export PKG_CONFIG_PATH="/Library/Frameworks/Mono.framework/Versions/Current/lib/pkgconfig"' >> ~/.bash_profile 2>/dev/null || true
+            echo 'export PATH="/Library/Frameworks/Mono.framework/Versions/Current/bin:$PATH"' >> ~/.zshrc 2>/dev/null || true
+            echo 'export PKG_CONFIG_PATH="/Library/Frameworks/Mono.framework/Versions/Current/lib/pkgconfig"' >> ~/.zshrc 2>/dev/null || true
+        else
+            echo "Failed to download Mono installer. Please install Mono manually from https://www.mono-project.com/download/stable/"
+        fi
     fi
     
     # Update PATH to include Mono binaries
@@ -742,33 +756,9 @@ fi
 # Check if Mono is installed
 if ! command -v mono &> /dev/null; then
     echo "Error: Mono is required to run this application."
-    
-    # Check if we can install Mono via package installer
-    if [ -f "mdk-latest.pkg" ]; then
-        echo "Installing Mono from downloaded package..."
-        sudo installer -pkg mdk-latest.pkg -target /
-        rm mdk-latest.pkg
-    else
-        echo "Attempting to download and install Mono..."
-        # Try to download and install Mono directly
-        curl -O https://download.mono-project.com/archive/mdk-latest.pkg
-        if [ -f "mdk-latest.pkg" ]; then
-            sudo installer -pkg mdk-latest.pkg -target /
-            rm mdk-latest.pkg
-        else
-            echo "Could not download Mono installer. Please install manually."
-            echo "Download from: https://www.mono-project.com/download/stable/"
-            osascript -e 'display dialog "Mono is required to run this application. Please install Mono from https://www.mono-project.com/download/stable/" with icon stop' 2>/dev/null || echo "Display dialog failed, showing in terminal"
-        fi
-    fi
-    
-    # Recheck if Mono is now available
-    export PATH="/usr/local/bin:/opt/homebrew/bin:/Library/Frameworks/Mono.framework/Versions/Current/bin:$PATH"
-    if ! command -v mono &> /dev/null; then
-        echo "Mono installation failed or requires a terminal restart."
-        echo "Please restart your terminal and try running the application again."
-        exit 1
-    fi
+    echo "Please install Mono from: https://www.mono-project.com/download/stable/"
+    osascript -e 'display dialog "Mono is required to run this application. Please install Mono from https://www.mono-project.com/download/stable/" with icon stop' 2>/dev/null || echo "Display dialog failed, showing in terminal"
+    exit 1
 fi
 
 # Run the application
@@ -795,33 +785,8 @@ fi
 # Check if Mono is installed
 if ! command -v mono &> /dev/null; then
     echo "Error: Mono is required to run this application."
-    
-    # Check if we can install Mono via package installer
-    if [ -f "mdk-latest.pkg" ]; then
-        echo "Installing Mono from downloaded package..."
-        sudo installer -pkg mdk-latest.pkg -target /
-        rm mdk-latest.pkg
-    else
-        echo "Attempting to download and install Mono..."
-        # Try to download and install Mono directly
-        curl -O https://download.mono-project.com/archive/mdk-latest.pkg
-        if [ -f "mdk-latest.pkg" ]; then
-            sudo installer -pkg mdk-latest.pkg -target /
-            rm mdk-latest.pkg
-        else
-            echo "Could not download Mono installer. Please install manually."
-            echo "Download from: https://www.mono-project.com/download/stable/"
-            exit 1
-        fi
-    fi
-    
-    # Recheck if Mono is now available
-    export PATH="/usr/local/bin:/opt/homebrew/bin:/Library/Frameworks/Mono.framework/Versions/Current/bin:$PATH"
-    if ! command -v mono &> /dev/null; then
-        echo "Mono installation failed or requires a terminal restart."
-        echo "Please restart your terminal and try running the application again."
-        exit 1
-    fi
+    echo "Please install Mono from: https://www.mono-project.com/download/stable/"
+    exit 1
 fi
 
 echo "Starting Free Fire Pro Max Plus Ultra..."
