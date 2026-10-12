@@ -459,13 +459,8 @@ namespace FreeFireCheatUI
             yPos += 40;
         }
 
-        [STAThread]
-        public static void Main()
-        {
-            Application.EnableVisualStyles();
-            Application.SetCompatibleTextRenderingDefault(false);
-            Application.Run(new CheatForm());
-        }
+        // Removed Main method to avoid conflict with Program.cs
+        // This class is now purely a Windows Forms component
     }
 }
 EOF
