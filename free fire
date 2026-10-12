@@ -1,0 +1,637 @@
+#!/bin/bash
+
+# Free Fire Cheat UI All-in-One Installer for macOS
+# This script contains all necessary components to compile and install the cheat UI on macOS
+
+echo "Free Fire Pro Max Plus Ultra All-in-One Installer"
+echo "================================================="
+echo ""
+
+# Check if running on macOS
+if [[ "$OSTYPE" != "darwin"* ]]; then
+    echo "Error: This installer is only for macOS."
+    exit 1
+fi
+
+echo "Checking for required dependencies..."
+
+# Check if Homebrew is installed
+if ! command -v brew &> /dev/null; then
+    echo "Homebrew not found. Installing Homebrew..."
+    /bin/bash -c "$(curl -fsSL https://raw.githubusercontent.com/Homebrew/install/HEAD/install.sh)"
+else
+    echo "Homebrew already installed."
+fi
+
+# Install Mono (required to compile and run C# applications on macOS)
+if ! command -v mono &> /dev/null; then
+    echo "Installing Mono..."
+    brew install mono
+else
+    echo "Mono already installed."
+fi
+
+# Install NuGet if not present (for package management)
+if ! command -v nuget &> /dev/null; then
+    echo "Installing NuGet..."
+    brew install nuget
+else
+    echo "NuGet already installed."
+fi
+
+echo ""
+echo "Creating project structure..."
+APP_NAME="FreeFireCheatUI"
+APP_DIR="$HOME/Applications/$APP_NAME"
+mkdir -p "$APP_DIR"
+
+echo "Creating C# source files..."
+
+# Create CheatForm.cs
+cat > "$APP_DIR/CheatForm.cs" << 'EOF'
+using System;
+using System.Collections.Generic;
+using System.Drawing;
+using System.Threading;
+using System.Windows.Forms;
+
+namespace FreeFireCheatUI
+{
+    public partial class CheatForm : Form
+    {
+        private Panel sidePanel;
+        private Panel contentPanel;
+        private Dictionary<string, Panel> tabPanels;
+        private Dictionary<string, Button> tabButtons;
+
+        public CheatForm()
+        {
+            InitializeComponent();
+        }
+
+        private void InitializeComponent()
+        {
+            // Form setup
+            this.Text = "Free Fire Pro Max Plus Ultra";
+            this.Size = new Size(800, 500);
+            this.BackColor = Color.FromArgb(30, 30, 30);
+            this.ForeColor = Color.White;
+            this.FormBorderStyle = FormBorderStyle.FixedSingle;
+            this.StartPosition = FormStartPosition.CenterScreen;
+
+            // Create side panel for tabs
+            sidePanel = new Panel
+            {
+                Size = new Size(150, this.ClientSize.Height),
+                Location = new Point(0, 0),
+                BackColor = Color.FromArgb(25, 25, 25)
+            };
+            this.Controls.Add(sidePanel);
+
+            // Create content panel
+            contentPanel = new Panel
+            {
+                Size = new Size(this.ClientSize.Width - 150, this.ClientSize.Height),
+                Location = new Point(150, 0),
+                BackColor = Color.FromArgb(40, 40, 40)
+            };
+            this.Controls.Add(contentPanel);
+
+            // Initialize tab system
+            InitializeTabs();
+        }
+
+        private void InitializeTabs()
+        {
+            tabPanels = new Dictionary<string, Panel>();
+            tabButtons = new Dictionary<string, Button>();
+
+            string[] tabNames = { "ESP", "Aimbot", "Misc", "Settings" };
+
+            for (int i = 0; i < tabNames.Length; i++)
+            {
+                // Create tab button
+                Button tabButton = new Button
+                {
+                    Text = tabNames[i],
+                    Size = new Size(150, 50),
+                    Location = new Point(0, i * 50),
+                    BackColor = Color.FromArgb(50, 50, 50),
+                    FlatStyle = FlatStyle.Flat,
+                    ForeColor = Color.White,
+                    TextAlign = ContentAlignment.MiddleLeft
+                };
+                tabButton.FlatAppearance.BorderSize = 0;
+                tabButton.Click += TabButton_Click;
+                sidePanel.Controls.Add(tabButton);
+                tabButtons[tabNames[i]] = tabButton;
+
+                // Create tab panel
+                Panel tabPanel = new Panel
+                {
+                    Size = contentPanel.Size,
+                    Location = new Point(0, 0),
+                    BackColor = Color.FromArgb(40, 40, 40),
+                    Visible = false
+                };
+                contentPanel.Controls.Add(tabPanel);
+                tabPanels[tabNames[i]] = tabPanel;
+            }
+
+            // Create content for each tab
+            CreateESPTab();
+            CreateAimbotTab();
+            CreateMiscTab();
+            CreateSettingsTab();
+
+            // Show first tab by default
+            SwitchTab("ESP");
+        }
+
+        private void TabButton_Click(object sender, EventArgs e)
+        {
+            Button clickedButton = (Button)sender;
+            foreach (var kvp in tabButtons)
+            {
+                if (kvp.Value == clickedButton)
+                {
+                    SwitchTab(kvp.Key);
+                    break;
+                }
+            }
+        }
+
+        private void SwitchTab(string tabName)
+        {
+            // Hide all panels and reset button colors
+            foreach (var panel in tabPanels.Values)
+                panel.Visible = false;
+            
+            foreach (var button in tabButtons.Values)
+                button.BackColor = Color.FromArgb(50, 50, 50);
+
+            // Show selected panel and highlight button
+            tabPanels[tabName].Visible = true;
+            tabButtons[tabName].BackColor = Color.DodgerBlue;
+        }
+
+        private void CreateESPTab()
+        {
+            Panel panel = tabPanels["ESP"];
+            int yPos = 20;
+
+            AddSectionTitle(panel, "Player ESP", ref yPos);
+            AddToggle(panel, "Box ESP", ref yPos);
+            AddToggle(panel, "Line ESP", ref yPos);
+            AddToggle(panel, "Name ESP", ref yPos);
+            AddToggle(panel, "Distance ESP", ref yPos);
+            AddToggle(panel, "Health ESP", ref yPos);
+            AddToggle(panel, "Skeleton ESP", ref yPos);
+            
+            AddSectionTitle(panel, "Item ESP", ref yPos);
+            AddToggle(panel, "Weapon ESP", ref yPos);
+            AddToggle(panel, "Ammo ESP", ref yPos);
+            AddToggle(panel, "Medkit ESP", ref yPos);
+            AddToggle(panel, "Helmet ESP", ref yPos);
+            AddToggle(panel, "Vest ESP", ref yPos);
+        }
+
+        private void CreateAimbotTab()
+        {
+            Panel panel = tabPanels["Aimbot"];
+            int yPos = 20;
+
+            AddSectionTitle(panel, "Aim Settings", ref yPos);
+            AddToggle(panel, "Enable Aimbot", ref yPos);
+            AddComboBox(panel, "Aim Key", new[] { "Right Mouse", "Left Mouse", "Shift", "Ctrl" }, ref yPos);
+            AddSlider(panel, "Smoothness", 1, 20, 10, ref yPos);
+            AddComboBox(panel, "Aim Position", new[] { "Head", "Body", "Legs" }, ref yPos);
+            AddToggle(panel, "Auto Fire", ref yPos);
+            AddToggle(panel, "Auto Wallbang", ref yPos);
+            
+            AddSectionTitle(panel, "FOV Settings", ref yPos);
+            AddSlider(panel, "FOV Size", 10, 500, 100, ref yPos);
+            AddToggle(panel, "Draw FOV Circle", ref yPos);
+            
+            AddSectionTitle(panel, "Target Priority", ref yPos);
+            AddComboBox(panel, "Priority Mode", new[] { "Closest", "Lowest HP", "Furthest" }, ref yPos);
+        }
+
+        private void CreateMiscTab()
+        {
+            Panel panel = tabPanels["Misc"];
+            int yPos = 20;
+
+            AddSectionTitle(panel, "Movement Hacks", ref yPos);
+            AddToggle(panel, "Speed Hack", ref yPos);
+            AddSlider(panel, "Speed Value", 1, 5, 2, ref yPos);
+            AddToggle(panel, "No Recoil", ref yPos);
+            AddToggle(panel, "No Spread", ref yPos);
+            
+            AddSectionTitle(panel, "Visual Hacks", ref yPos);
+            AddToggle(panel, "FPS Boost", ref yPos);
+            AddToggle(panel, "No Fog", ref yPos);
+            AddToggle(panel, "Night Mode", ref yPos);
+            AddToggle(panel, "Crosshair", ref yPos);
+            
+            AddSectionTitle(panel, "Gameplay Hacks", ref yPos);
+            AddToggle(panel, "Instant Medkit", ref yPos);
+            AddToggle(panel, "No Reload", ref yPos);
+            AddToggle(panel, "Infinite Ammo", ref yPos);
+            AddToggle(panel, "Rapid Fire", ref yPos);
+        }
+
+        private void CreateSettingsTab()
+        {
+            Panel panel = tabPanels["Settings"];
+            int yPos = 20;
+
+            AddSectionTitle(panel, "General Settings", ref yPos);
+            AddToggle(panel, "Start With Windows", ref yPos);
+            AddToggle(panel, "Minimize To Tray", ref yPos);
+            AddToggle(panel, "Anti-Cheat Bypass", ref yPos);
+            
+            AddSectionTitle(panel, "Keybinds", ref yPos);
+            AddKeybind(panel, "Menu Key", "Insert", ref yPos);
+            AddKeybind(panel, "Panic Key", "Delete", ref yPos);
+            
+            AddSectionTitle(panel, "Config", ref yPos);
+            AddButton(panel, "Save Config", ref yPos);
+            AddButton(panel, "Load Config", ref yPos);
+            AddButton(panel, "Reset Config", ref yPos);
+            
+            AddSectionTitle(panel, "About", ref yPos);
+            Label aboutLabel = new Label
+            {
+                Text = "Free Fire Pro Max Plus Ultra v2.0\nFor Educational Purposes Only",
+                Location = new Point(20, yPos),
+                Size = new Size(300, 40),
+                ForeColor = Color.Gray
+            };
+            panel.Controls.Add(aboutLabel);
+        }
+
+        private void AddSectionTitle(Panel panel, string title, ref int yPos)
+        {
+            Label label = new Label
+            {
+                Text = title,
+                Location = new Point(10, yPos),
+                Size = new Size(200, 25),
+                ForeColor = Color.DodgerBlue,
+                Font = new Font(this.Font, FontStyle.Bold)
+            };
+            panel.Controls.Add(label);
+            yPos += 30;
+        }
+
+        private void AddToggle(Panel panel, string text, ref int yPos)
+        {
+            CheckBox checkBox = new CheckBox
+            {
+                Text = text,
+                Location = new Point(20, yPos),
+                Size = new Size(200, 25),
+                ForeColor = Color.White,
+                Checked = false
+            };
+            panel.Controls.Add(checkBox);
+            yPos += 30;
+        }
+
+        private void AddSlider(Panel panel, string text, int min, int max, int defaultValue, ref int yPos)
+        {
+            Label label = new Label
+            {
+                Text = $"{text}: {defaultValue}",
+                Location = new Point(20, yPos),
+                Size = new Size(200, 25),
+                ForeColor = Color.White
+            };
+            
+            TrackBar trackBar = new TrackBar
+            {
+                Location = new Point(20, yPos + 25),
+                Size = new Size(200, 45),
+                Minimum = min,
+                Maximum = max,
+                Value = defaultValue
+            };
+            
+            trackBar.Scroll += (s, e) => {
+                label.Text = $"{text}: {trackBar.Value}";
+            };
+            
+            panel.Controls.Add(label);
+            panel.Controls.Add(trackBar);
+            yPos += 80;
+        }
+
+        private void AddComboBox(Panel panel, string text, string[] items, ref int yPos)
+        {
+            Label label = new Label
+            {
+                Text = text,
+                Location = new Point(20, yPos),
+                Size = new Size(150, 25),
+                ForeColor = Color.White
+            };
+            
+            ComboBox comboBox = new ComboBox
+            {
+                Location = new Point(20, yPos + 25),
+                Size = new Size(150, 25),
+                DropDownStyle = ComboBoxStyle.DropDownList
+            };
+            comboBox.Items.AddRange(items);
+            if (items.Length > 0) comboBox.SelectedIndex = 0;
+            
+            panel.Controls.Add(label);
+            panel.Controls.Add(comboBox);
+            yPos += 60;
+        }
+
+        private void AddKeybind(Panel panel, string text, string defaultKey, ref int yPos)
+        {
+            Label label = new Label
+            {
+                Text = text,
+                Location = new Point(20, yPos),
+                Size = new Size(150, 25),
+                ForeColor = Color.White
+            };
+            
+            TextBox textBox = new TextBox
+            {
+                Location = new Point(20, yPos + 25),
+                Size = new Size(100, 25),
+                Text = defaultKey,
+                ReadOnly = true
+            };
+            
+            textBox.Click += (s, e) => {
+                MessageBox.Show("Press any key to bind...");
+                // In a real app, you would capture the key here
+            };
+            
+            panel.Controls.Add(label);
+            panel.Controls.Add(textBox);
+            yPos += 60;
+        }
+
+        private void AddButton(Panel panel, string text, ref int yPos)
+        {
+            Button button = new Button
+            {
+                Text = text,
+                Location = new Point(20, yPos),
+                Size = new Size(150, 30),
+                BackColor = Color.FromArgb(60, 60, 60),
+                ForeColor = Color.White,
+                FlatStyle = FlatStyle.Flat
+            };
+            button.FlatAppearance.BorderSize = 1;
+            panel.Controls.Add(button);
+            yPos += 40;
+        }
+
+        [STAThread]
+        public static void Main()
+        {
+            Application.EnableVisualStyles();
+            Application.SetCompatibleTextRenderingDefault(false);
+            Application.Run(new CheatForm());
+        }
+    }
+}
+EOF
+
+# Create Program.cs
+cat > "$APP_DIR/Program.cs" << 'EOF'
+using System;
+
+class Program
+{
+    static void Main()
+    {
+        Console.WriteLine("Free Fire Cheat UI");
+        Console.WriteLine("==================");
+        Console.WriteLine();
+        Console.WriteLine("This is a console-based demonstration of the menu structure.");
+        Console.WriteLine("In a full implementation, this would be a graphical interface.");
+        Console.WriteLine();
+        
+        // Display the menu structure
+        DisplayMenu();
+        
+        Console.WriteLine();
+        Console.WriteLine("Note: This is for educational purposes only.");
+        Console.WriteLine("Actual cheat functionality is not implemented.");
+        Console.ReadLine();
+    }
+    
+    static void DisplayMenu()
+    {
+        Console.WriteLine("Main Menu:");
+        Console.WriteLine("----------");
+        Console.WriteLine("1. ESP Features");
+        Console.WriteLine("   ├── Player ESP");
+        Console.WriteLine("   │   ├── Box ESP");
+        Console.WriteLine("   │   ├── Line ESP");
+        Console.WriteLine("   │   ├── Name ESP");
+        Console.WriteLine("   │   ├── Distance ESP");
+        Console.WriteLine("   │   ├── Health ESP");
+        Console.WriteLine("   │   └── Skeleton ESP");
+        Console.WriteLine("   └── Item ESP");
+        Console.WriteLine("       ├── Weapon ESP");
+        Console.WriteLine("       ├── Ammo ESP");
+        Console.WriteLine("       ├── Medkit ESP");
+        Console.WriteLine("       ├── Helmet ESP");
+        Console.WriteLine("       └── Vest ESP");
+        Console.WriteLine();
+        Console.WriteLine("2. Aimbot Features");
+        Console.WriteLine("   ├── Aim Settings");
+        Console.WriteLine("   │   ├── Enable Aimbot");
+        Console.WriteLine("   │   ├── Aim Key (Right Mouse, Left Mouse, Shift, Ctrl)");
+        Console.WriteLine("   │   ├── Smoothness (1-20)");
+        Console.WriteLine("   │   ├── Aim Position (Head, Body, Legs)");
+        Console.WriteLine("   │   ├── Auto Fire");
+        Console.WriteLine("   │   └── Auto Wallbang");
+        Console.WriteLine("   ├── FOV Settings");
+        Console.WriteLine("   │   ├── FOV Size (10-500)");
+        Console.WriteLine("   │   └── Draw FOV Circle");
+        Console.WriteLine("   └── Target Priority (Closest, Lowest HP, Furthest)");
+        Console.WriteLine();
+        Console.WriteLine("3. Miscellaneous Hacks");
+        Console.WriteLine("   ├── Movement Hacks");
+        Console.WriteLine("   │   ├── Speed Hack");
+        Console.WriteLine("   │   ├── Speed Value (1-5)");
+        Console.WriteLine("   │   ├── No Recoil");
+        Console.WriteLine("   │   └── No Spread");
+        Console.WriteLine("   ├── Visual Hacks");
+        Console.WriteLine("   │   ├── FPS Boost");
+        Console.WriteLine("   │   ├── No Fog");
+        Console.WriteLine("   │   ├── Night Mode");
+        Console.WriteLine("   │   └── Crosshair");
+        Console.WriteLine("   └── Gameplay Hacks");
+        Console.WriteLine("       ├── Instant Medkit");
+        Console.WriteLine("       ├── No Reload");
+        Console.WriteLine("       ├── Infinite Ammo");
+        Console.WriteLine("       └── Rapid Fire");
+        Console.WriteLine();
+        Console.WriteLine("4. Settings");
+        Console.WriteLine("   ├── General Settings");
+        Console.WriteLine("   │   ├── Start With Windows");
+        Console.WriteLine("   │   ├── Minimize To Tray");
+        Console.WriteLine("   │   └── Anti-Cheat Bypass");
+        Console.WriteLine("   ├── Keybinds");
+        Console.WriteLine("   │   ├── Menu Key (Insert)");
+        Console.WriteLine("   │   └── Panic Key (Delete)");
+        Console.WriteLine("   ├── Config");
+        Console.WriteLine("   │   ├── Save Config");
+        Console.WriteLine("   │   ├── Load Config");
+        Console.WriteLine("   │   └── Reset Config");
+        Console.WriteLine("   └── About");
+        Console.WriteLine("       Free Fire Pro Max Plus Ultra v2.0");
+    }
+}
+EOF
+
+echo "Creating project file..."
+cat > "$APP_DIR/${APP_NAME}.csproj" << EOF
+<Project Sdk="Microsoft.NET.Sdk">
+
+  <PropertyGroup>
+    <OutputType>WinExe</OutputType>
+    <TargetFramework>net6.0-windows</TargetFramework>
+    <UseWindowsForms>true</UseWindowsForms>
+    <ImplicitUsings>enable</ImplicitUsings>
+  </PropertyGroup>
+
+</Project>
+EOF
+
+echo "Compiling application..."
+cd "$APP_DIR"
+
+# Compile the C# application
+echo "Compiling with Mono..."
+mcs -sdk:4.8 -references:System.Windows.Forms.dll,System.Drawing.dll -target:winexe -out:"${APP_NAME}.exe" CheatForm.cs Program.cs
+
+if [[ $? -ne 0 ]]; then
+    echo "Compilation failed. Trying alternative compilation method..."
+    # Alternative compilation approach
+    csc -target:winexe -out:"${APP_NAME}.exe" CheatForm.cs Program.cs
+    
+    if [[ $? -ne 0 ]]; then
+        echo "Compilation failed. Please check your source code for errors."
+        exit 1
+    fi
+fi
+
+echo "Creating application bundle structure..."
+BUNDLE_DIR="$APP_DIR/$APP_NAME.app"
+CONTENTS_DIR="$BUNDLE_DIR/Contents"
+MACOS_DIR="$CONTENTS_DIR/MacOS"
+RESOURCES_DIR="$CONTENTS_DIR/Resources"
+
+mkdir -p "$MACOS_DIR"
+mkdir -p "$RESOURCES_DIR"
+
+echo "Creating Info.plist..."
+cat > "$CONTENTS_DIR/Info.plist" << EOF
+<?xml version="1.0" encoding="UTF-8"?>
+<!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
+<plist version="1.0">
+<dict>
+    <key>CFBundleDevelopmentRegion</key>
+    <string>English</string>
+    <key>CFBundleExecutable</key>
+    <string>launcher</string>
+    <key>CFBundleIconFile</key>
+    <string>app.icns</string>
+    <key>CFBundleIdentifier</key>
+    <string>com.freefire.cheatui</string>
+    <key>CFBundleInfoDictionaryVersion</key>
+    <string>6.0</string>
+    <key>CFBundleName</key>
+    <string>Free Fire Cheat UI</string>
+    <key>CFBundlePackageType</key>
+    <string>APPL</string>
+    <key>CFBundleShortVersionString</key>
+    <string>1.0</string>
+    <key>CFBundleSignature</key>
+    <string>????</string>
+    <key>CFBundleVersion</key>
+    <string>1.0</string>
+    <key>LSMinimumSystemVersion</key>
+    <string>10.12</string>
+    <key>NSPrincipalClass</key>
+    <string>NSApplication</string>
+</dict>
+</plist>
+EOF
+
+echo "Creating launcher script..."
+cat > "$MACOS_DIR/launcher" << 'EOF'
+#!/bin/bash
+DIR="$( cd "$( dirname "${BASH_SOURCE[0]}" )" && pwd )"
+APP_ROOT="$(dirname "$DIR")"
+cd "$APP_ROOT"
+
+# Check if Mono is installed
+if ! command -v mono &> /dev/null; then
+    echo "Error: Mono is required to run this application."
+    echo "Please install Mono from https://www.mono-project.com/"
+    osascript -e 'display dialog "Mono is required to run this application. Please install Mono from https://www.mono-project.com/" with icon stop'
+    exit 1
+fi
+
+# Run the application
+mono "./FreeFireCheatUI.exe"
+EOF
+
+chmod +x "$MACOS_DIR/launcher"
+
+echo "Creating run script for terminal execution..."
+cat > "$APP_DIR/run.sh" << 'EOF'
+#!/bin/bash
+cd "$(dirname "$0")"
+
+# Check if Mono is installed
+if ! command -v mono &> /dev/null; then
+    echo "Error: Mono is required to run this application."
+    echo "Please install Mono from https://www.mono-project.com/"
+    exit 1
+fi
+
+echo "Starting Free Fire Pro Max Plus Ultra..."
+mono "./FreeFireCheatUI.exe"
+EOF
+
+chmod +x "$APP_DIR/run.sh"
+
+echo "Creating uninstall script..."
+cat > "$APP_DIR/uninstall.sh" << EOF
+#!/bin/bash
+echo "Uninstalling Free Fire Cheat UI..."
+rm -rf "$APP_DIR"
+echo "Uninstallation complete."
+EOF
+
+chmod +x "$APP_DIR/uninstall.sh"
+
+echo ""
+echo "Installation completed!"
+echo ""
+echo "To run the application, you can either:"
+echo "1. Double-click the application in Finder (located at $BUNDLE_DIR)"
+echo "2. Open Terminal and navigate to: $APP_DIR"
+echo "3. Run: ./run.sh"
+echo ""
+echo "To uninstall, run: $APP_DIR/uninstall.sh"
+echo ""
+echo "Note: This is for educational purposes only."
+echo "Actual cheat functionality is not implemented."
+EOF
+}
