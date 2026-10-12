@@ -6,6 +6,11 @@
 echo "Free Fire Pro Max Plus Ultra All-in-One Installer"
 echo "================================================="
 echo ""
+echo "NOTE: If you encounter compilation errors, you may need to:"
+echo "  1. Restart your terminal session after the first run"
+echo "  2. Manually install Mono with: brew install mono"
+echo "  3. Ensure Xcode Command Line Tools are installed: xcode-select --install"
+echo ""
 
 # Check if running on macOS
 if [[ "$OSTYPE" != "darwin"* ]]; then
@@ -27,8 +32,29 @@ fi
 if ! command -v mono &> /dev/null; then
     echo "Installing Mono..."
     brew install mono
+    # Update PATH to include Mono binaries
+    export PATH="/usr/local/bin:/opt/homebrew/bin:$PATH"
+    if [ -d "/usr/local/share/mono" ]; then
+        export PATH="/usr/local/share/mono/bin:$PATH"
+    elif [ -d "/opt/homebrew/share/mono" ]; then
+        export PATH="/opt/homebrew/share/mono/bin:$PATH"
+    fi
+    
+    # Source bash profile to ensure paths are updated
+    if [ -f ~/.bash_profile ]; then
+        source ~/.bash_profile
+    elif [ -f ~/.zshrc ]; then
+        source ~/.zshrc
+    fi
 else
     echo "Mono already installed."
+    # Ensure PATH includes Mono even if previously installed
+    export PATH="/usr/local/bin:/opt/homebrew/bin:$PATH"
+    if [ -d "/usr/local/share/mono" ]; then
+        export PATH="/usr/local/share/mono/bin:$PATH"
+    elif [ -d "/opt/homebrew/share/mono" ]; then
+        export PATH="/opt/homebrew/share/mono/bin:$PATH"
+    fi
 fi
 
 # Install NuGet if not present (for package management)
@@ -514,19 +540,69 @@ EOF
 echo "Compiling application..."
 cd "$APP_DIR"
 
-# Compile the C# application
-echo "Compiling with Mono..."
-mcs -sdk:4.8 -references:System.Windows.Forms.dll,System.Drawing.dll -target:winexe -out:"${APP_NAME}.exe" CheatForm.cs Program.cs
+# Ensure Mono is in PATH
+export PATH="/usr/local/bin:/opt/homebrew/bin:$PATH"
+if [ -d "/usr/local/share/mono" ]; then
+    export PATH="/usr/local/share/mono/bin:$PATH"
+elif [ -d "/opt/homebrew/share/mono" ]; then
+    export PATH="/opt/homebrew/share/mono/bin:$PATH"
+fi
+
+# Verify Mono installation
+if ! command -v mono &> /dev/null; then
+    echo "Error: Mono runtime not found."
+    echo "Please restart your terminal and run this installer again."
+    exit 1
+fi
+
+# Check for available compilers
+echo "Available Mono compiler tools:"
+which mcs >/dev/null 2>&1 && echo "Found mcs: $(which mcs)" || echo "mcs not found"
+which csc >/dev/null 2>&1 && echo "Found csc: $(which csc)" || echo "csc not found"
+which dmcs >/dev/null 2>&1 && echo "Found dmcs: $(which dmcs)" || echo "dmcs not found"
+
+# Try different compilation methods
+echo "Compiling with mcs (primary method)..."
+mcs -sdk:4.8 -r:System.Windows.Forms.dll,System.Drawing.dll -target:winexe -out:"${APP_NAME}.exe" CheatForm.cs Program.cs 2>&1
 
 if [[ $? -ne 0 ]]; then
-    echo "Compilation failed. Trying alternative compilation method..."
-    # Alternative compilation approach
-    csc -target:winexe -out:"${APP_NAME}.exe" CheatForm.cs Program.cs
+    echo "Primary compilation failed. Trying alternative approaches..."
     
-    if [[ $? -ne 0 ]]; then
-        echo "Compilation failed. Please check your source code for errors."
+    # Try with dmcs if available
+    if command -v dmcs &> /dev/null; then
+        echo "Trying dmcs compiler..."
+        dmcs -r:System.Windows.Forms.dll,System.Drawing.dll -target:winexe -out:"${APP_NAME}.exe" CheatForm.cs Program.cs 2>&1
+        if [[ $? -eq 0 ]]; then
+            echo "Successfully compiled with dmcs."
+        else
+            echo "dmcs compilation also failed."
+        fi
+    else
+        echo "dmcs not available."
+    fi
+    
+    # Try with csc if available
+    if command -v csc &> /dev/null; then
+        echo "Trying csc compiler..."
+        csc -target:winexe -out:"${APP_NAME}.exe" CheatForm.cs Program.cs 2>&1
+        if [[ $? -eq 0 ]]; then
+            echo "Successfully compiled with csc."
+        else
+            echo "csc compilation also failed."
+        fi
+    else
+        echo "csc not available."
+    fi
+    
+    # If all compilation attempts fail
+    if [[ ! -f "${APP_NAME}.exe" ]]; then
+        echo "All compilation methods failed."
+        echo "Please check your source code for errors or try installing Mono manually:"
+        echo "brew install mono"
         exit 1
     fi
+else
+    echo "Successfully compiled with mcs."
 fi
 
 echo "Creating application bundle structure..."
@@ -579,12 +655,37 @@ DIR="$( cd "$( dirname "${BASH_SOURCE[0]}" )" && pwd )"
 APP_ROOT="$(dirname "$DIR")"
 cd "$APP_ROOT"
 
+# Ensure PATH includes common locations for Mono
+export PATH="/usr/local/bin:/opt/homebrew/bin:/usr/local/share/mono/bin:/opt/homebrew/share/mono/bin:$PATH"
+
+# Source shell profiles if they exist to get environment variables
+if [ -f ~/.bash_profile ]; then
+    source ~/.bash_profile 2>/dev/null
+elif [ -f ~/.zshrc ]; then
+    source ~/.zshrc 2>/dev/null
+fi
+
 # Check if Mono is installed
 if ! command -v mono &> /dev/null; then
     echo "Error: Mono is required to run this application."
-    echo "Please install Mono from https://www.mono-project.com/"
-    osascript -e 'display dialog "Mono is required to run this application. Please install Mono from https://www.mono-project.com/" with icon stop'
-    exit 1
+    echo "Attempting to install Mono..."
+    
+    # Try to install Mono
+    if command -v brew &> /dev/null; then
+        brew install mono
+        if command -v mono &> /dev/null; then
+            echo "Mono successfully installed."
+        else
+            echo "Failed to install Mono automatically."
+            echo "Please install Mono manually from https://www.mono-project.com/"
+            osascript -e 'display dialog "Mono is required to run this application. Please install Mono from https://www.mono-project.com/" with icon stop' 2>/dev/null || echo "Display dialog failed, showing in terminal"
+            exit 1
+        fi
+    else
+        echo "Homebrew not found. Please install Homebrew first, then Mono from https://www.mono-project.com/"
+        osascript -e 'display dialog "Homebrew and Mono are required to run this application. Please install them from https://www.mono-project.com/" with icon stop' 2>/dev/null || echo "Display dialog failed, showing in terminal"
+        exit 1
+    fi
 fi
 
 # Run the application
@@ -598,11 +699,35 @@ cat > "$APP_DIR/run.sh" << 'EOF'
 #!/bin/bash
 cd "$(dirname "$0")"
 
+# Ensure PATH includes common locations for Mono
+export PATH="/usr/local/bin:/opt/homebrew/bin:/usr/local/share/mono/bin:/opt/homebrew/share/mono/bin:$PATH"
+
+# Source shell profiles if they exist to get environment variables
+if [ -f ~/.bash_profile ]; then
+    source ~/.bash_profile 2>/dev/null
+elif [ -f ~/.zshrc ]; then
+    source ~/.zshrc 2>/dev/null
+fi
+
 # Check if Mono is installed
 if ! command -v mono &> /dev/null; then
     echo "Error: Mono is required to run this application."
-    echo "Please install Mono from https://www.mono-project.com/"
-    exit 1
+    echo "Attempting to install Mono..."
+    
+    # Try to install Mono
+    if command -v brew &> /dev/null; then
+        brew install mono
+        if command -v mono &> /dev/null; then
+            echo "Mono successfully installed."
+        else
+            echo "Failed to install Mono automatically."
+            echo "Please install Mono manually from https://www.mono-project.com/"
+            exit 1
+        fi
+    else
+        echo "Homebrew not found. Please install Homebrew first, then Mono from https://www.mono-project.com/"
+        exit 1
+    fi
 fi
 
 echo "Starting Free Fire Pro Max Plus Ultra..."
