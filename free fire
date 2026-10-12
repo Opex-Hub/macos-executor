@@ -24,43 +24,67 @@ echo "Checking for required dependencies..."
 if ! command -v brew &> /dev/null; then
     echo "Homebrew not found. Installing Homebrew..."
     /bin/bash -c "$(curl -fsSL https://raw.githubusercontent.com/Homebrew/install/HEAD/install.sh)"
+    
+    # Add Homebrew to PATH immediately after installation
+    if [[ -f "/opt/homebrew/bin/brew" ]]; then
+        # Apple Silicon Mac
+        eval "$(/opt/homebrew/bin/brew shellenv)"
+    elif [[ -f "/usr/local/bin/brew" ]]; then
+        # Intel Mac
+        eval "$(/usr/local/bin/brew shellenv)"
+    fi
 else
     echo "Homebrew already installed."
+    
+    # Ensure Homebrew is in PATH
+    if [[ -f "/opt/homebrew/bin/brew" ]]; then
+        # Apple Silicon Mac
+        eval "$(/opt/homebrew/bin/brew shellenv)"
+    elif [[ -f "/usr/local/bin/brew" ]]; then
+        # Intel Mac
+        eval "$(/usr/local/bin/brew shellenv)"
+    fi
 fi
 
 # Install Mono (required to compile and run C# applications on macOS)
 if ! command -v mono &> /dev/null; then
     echo "Installing Mono..."
-    brew install mono
-    # Update PATH to include Mono binaries
-    export PATH="/usr/local/bin:/opt/homebrew/bin:$PATH"
-    if [ -d "/usr/local/share/mono" ]; then
-        export PATH="/usr/local/share/mono/bin:$PATH"
-    elif [ -d "/opt/homebrew/share/mono" ]; then
-        export PATH="/opt/homebrew/share/mono/bin:$PATH"
+    if command -v brew &> /dev/null; then
+        brew install mono
+    else
+        echo "Homebrew installation failed. Attempting direct Mono installation..."
+        # Direct download and install of Mono
+        curl -O https://download.mono-project.com/archive/mdk-latest.pkg
+        sudo installer -pkg mdk-latest.pkg -target /
+        rm mdk-latest.pkg
+        
+        # Add Mono to PATH
+        export PATH="/Library/Frameworks/Mono.framework/Versions/Current/bin:$PATH"
+        export PKG_CONFIG_PATH="/Library/Frameworks/Mono.framework/Versions/Current/lib/pkgconfig"
+        
+        # Add to profile files for persistence
+        echo 'export PATH="/Library/Frameworks/Mono.framework/Versions/Current/bin:$PATH"' >> ~/.bash_profile 2>/dev/null || true
+        echo 'export PKG_CONFIG_PATH="/Library/Frameworks/Mono.framework/Versions/Current/lib/pkgconfig"' >> ~/.bash_profile 2>/dev/null || true
+        echo 'export PATH="/Library/Frameworks/Mono.framework/Versions/Current/bin:$PATH"' >> ~/.zshrc 2>/dev/null || true
+        echo 'export PKG_CONFIG_PATH="/Library/Frameworks/Mono.framework/Versions/Current/lib/pkgconfig"' >> ~/.zshrc 2>/dev/null || true
     fi
     
-    # Source bash profile to ensure paths are updated
-    if [ -f ~/.bash_profile ]; then
-        source ~/.bash_profile
-    elif [ -f ~/.zshrc ]; then
-        source ~/.zshrc
-    fi
+    # Update PATH to include Mono binaries
+    export PATH="/usr/local/bin:/opt/homebrew/bin:/Library/Frameworks/Mono.framework/Versions/Current/bin:$PATH"
 else
     echo "Mono already installed."
-    # Ensure PATH includes Mono even if previously installed
-    export PATH="/usr/local/bin:/opt/homebrew/bin:$PATH"
-    if [ -d "/usr/local/share/mono" ]; then
-        export PATH="/usr/local/share/mono/bin:$PATH"
-    elif [ -d "/opt/homebrew/share/mono" ]; then
-        export PATH="/opt/homebrew/share/mono/bin:$PATH"
-    fi
+    # Ensure PATH includes Mono
+    export PATH="/usr/local/bin:/opt/homebrew/bin:/Library/Frameworks/Mono.framework/Versions/Current/bin:$PATH"
 fi
 
 # Install NuGet if not present (for package management)
 if ! command -v nuget &> /dev/null; then
     echo "Installing NuGet..."
-    brew install nuget
+    if command -v brew &> /dev/null; then
+        brew install nuget
+    else
+        echo "Cannot install NuGet without Homebrew. Skipping..."
+    fi
 else
     echo "NuGet already installed."
 fi
@@ -541,68 +565,118 @@ echo "Compiling application..."
 cd "$APP_DIR"
 
 # Ensure Mono is in PATH
-export PATH="/usr/local/bin:/opt/homebrew/bin:$PATH"
-if [ -d "/usr/local/share/mono" ]; then
-    export PATH="/usr/local/share/mono/bin:$PATH"
-elif [ -d "/opt/homebrew/share/mono" ]; then
-    export PATH="/opt/homebrew/share/mono/bin:$PATH"
-fi
+export PATH="/usr/local/bin:/opt/homebrew/bin:/Library/Frameworks/Mono.framework/Versions/Current/bin:$PATH"
 
 # Verify Mono installation
 if ! command -v mono &> /dev/null; then
-    echo "Error: Mono runtime not found."
+    echo "Error: Mono runtime not found after installation attempt."
     echo "Please restart your terminal and run this installer again."
+    echo "Or manually install Mono from https://www.mono-project.com/download/stable/"
     exit 1
 fi
 
 # Check for available compilers
-echo "Available Mono compiler tools:"
-which mcs >/dev/null 2>&1 && echo "Found mcs: $(which mcs)" || echo "mcs not found"
-which csc >/dev/null 2>&1 && echo "Found csc: $(which csc)" || echo "csc not found"
-which dmcs >/dev/null 2>&1 && echo "Found dmcs: $(which dmcs)" || echo "dmcs not found"
+echo "Checking available Mono compiler tools..."
+MCS_AVAILABLE=false
+CSC_AVAILABLE=false
+DMCS_AVAILABLE=false
+
+if command -v mcs &> /dev/null; then
+    echo "Found mcs: $(which mcs)"
+    MCS_AVAILABLE=true
+else
+    echo "mcs not found"
+fi
+
+if command -v csc &> /dev/null; then
+    echo "Found csc: $(which csc)"
+    CSC_AVAILABLE=true
+else
+    echo "csc not found"
+fi
+
+if command -v dmcs &> /dev/null; then
+    echo "Found dmcs: $(which dmcs)"
+    DMCS_AVAILABLE=true
+else
+    echo "dmcs not found"
+fi
+
+# Compilation function
+compile_with() {
+    local compiler=$1
+    echo "Compiling with $compiler..."
+    
+    case $compiler in
+        "mcs")
+            mcs -sdk:4.8 -r:System.Windows.Forms.dll,System.Drawing.dll -target:winexe -out:"${APP_NAME}.exe" CheatForm.cs Program.cs 2>&1
+            ;;
+        "dmcs")
+            dmcs -r:System.Windows.Forms.dll,System.Drawing.dll -target:winexe -out:"${APP_NAME}.exe" CheatForm.cs Program.cs 2>&1
+            ;;
+        "csc")
+            csc -target:winexe -out:"${APP_NAME}.exe" CheatForm.cs Program.cs 2>&1
+            ;;
+    esac
+    
+    return $?
+}
 
 # Try different compilation methods
-echo "Compiling with mcs (primary method)..."
-mcs -sdk:4.8 -r:System.Windows.Forms.dll,System.Drawing.dll -target:winexe -out:"${APP_NAME}.exe" CheatForm.cs Program.cs 2>&1
+COMPILED=false
 
-if [[ $? -ne 0 ]]; then
-    echo "Primary compilation failed. Trying alternative approaches..."
-    
-    # Try with dmcs if available
-    if command -v dmcs &> /dev/null; then
-        echo "Trying dmcs compiler..."
-        dmcs -r:System.Windows.Forms.dll,System.Drawing.dll -target:winexe -out:"${APP_NAME}.exe" CheatForm.cs Program.cs 2>&1
-        if [[ $? -eq 0 ]]; then
-            echo "Successfully compiled with dmcs."
-        else
-            echo "dmcs compilation also failed."
-        fi
+# Try mcs first (recommended)
+if [[ "$MCS_AVAILABLE" = true ]] && [[ "$COMPILED" = false ]]; then
+    if compile_with "mcs"; then
+        echo "Successfully compiled with mcs."
+        COMPILED=true
     else
-        echo "dmcs not available."
+        echo "mcs compilation failed."
     fi
-    
-    # Try with csc if available
-    if command -v csc &> /dev/null; then
-        echo "Trying csc compiler..."
-        csc -target:winexe -out:"${APP_NAME}.exe" CheatForm.cs Program.cs 2>&1
-        if [[ $? -eq 0 ]]; then
-            echo "Successfully compiled with csc."
-        else
-            echo "csc compilation also failed."
-        fi
+fi
+
+# Try dmcs if mcs failed
+if [[ "$DMCS_AVAILABLE" = true ]] && [[ "$COMPILED" = false ]]; then
+    if compile_with "dmcs"; then
+        echo "Successfully compiled with dmcs."
+        COMPILED=true
     else
-        echo "csc not available."
+        echo "dmcs compilation failed."
     fi
+fi
+
+# Try csc if others failed
+if [[ "$CSC_AVAILABLE" = true ]] && [[ "$COMPILED" = false ]]; then
+    if compile_with "csc"; then
+        echo "Successfully compiled with csc."
+        COMPILED=true
+    else
+        echo "csc compilation failed."
+    fi
+fi
+
+# Final check
+if [[ "$COMPILED" = false ]]; then
+    echo "All compilation methods failed."
+    echo "Attempting manual compilation with basic mcs command..."
     
-    # If all compilation attempts fail
-    if [[ ! -f "${APP_NAME}.exe" ]]; then
-        echo "All compilation methods failed."
-        echo "Please check your source code for errors or try installing Mono manually:"
-        echo "brew install mono"
+    # Last resort compilation attempt
+    mcs -r:System.Windows.Forms,System.Drawing -target:winexe -out:"${APP_NAME}.exe" CheatForm.cs Program.cs 2>&1
+    
+    if [[ $? -eq 0 ]] && [[ -f "${APP_NAME}.exe" ]]; then
+        echo "Manual compilation successful."
+    else
+        echo "Manual compilation also failed."
+        echo ""
+        echo "Troubleshooting steps:"
+        echo "1. Ensure Xcode Command Line Tools are installed:"
+        echo "   xcode-select --install"
+        echo "2. Restart your terminal session"
+        echo "3. Manually install Mono from:"
+        echo "   https://www.mono-project.com/download/stable/"
+        echo "4. Check if your C# source code has syntax errors"
         exit 1
     fi
-else
-    echo "Successfully compiled with mcs."
 fi
 
 echo "Creating application bundle structure..."
@@ -656,7 +730,7 @@ APP_ROOT="$(dirname "$DIR")"
 cd "$APP_ROOT"
 
 # Ensure PATH includes common locations for Mono
-export PATH="/usr/local/bin:/opt/homebrew/bin:/usr/local/share/mono/bin:/opt/homebrew/share/mono/bin:$PATH"
+export PATH="/usr/local/bin:/opt/homebrew/bin:/Library/Frameworks/Mono.framework/Versions/Current/bin:$PATH"
 
 # Source shell profiles if they exist to get environment variables
 if [ -f ~/.bash_profile ]; then
@@ -668,22 +742,31 @@ fi
 # Check if Mono is installed
 if ! command -v mono &> /dev/null; then
     echo "Error: Mono is required to run this application."
-    echo "Attempting to install Mono..."
     
-    # Try to install Mono
-    if command -v brew &> /dev/null; then
-        brew install mono
-        if command -v mono &> /dev/null; then
-            echo "Mono successfully installed."
-        else
-            echo "Failed to install Mono automatically."
-            echo "Please install Mono manually from https://www.mono-project.com/"
-            osascript -e 'display dialog "Mono is required to run this application. Please install Mono from https://www.mono-project.com/" with icon stop' 2>/dev/null || echo "Display dialog failed, showing in terminal"
-            exit 1
-        fi
+    # Check if we can install Mono via package installer
+    if [ -f "mdk-latest.pkg" ]; then
+        echo "Installing Mono from downloaded package..."
+        sudo installer -pkg mdk-latest.pkg -target /
+        rm mdk-latest.pkg
     else
-        echo "Homebrew not found. Please install Homebrew first, then Mono from https://www.mono-project.com/"
-        osascript -e 'display dialog "Homebrew and Mono are required to run this application. Please install them from https://www.mono-project.com/" with icon stop' 2>/dev/null || echo "Display dialog failed, showing in terminal"
+        echo "Attempting to download and install Mono..."
+        # Try to download and install Mono directly
+        curl -O https://download.mono-project.com/archive/mdk-latest.pkg
+        if [ -f "mdk-latest.pkg" ]; then
+            sudo installer -pkg mdk-latest.pkg -target /
+            rm mdk-latest.pkg
+        else
+            echo "Could not download Mono installer. Please install manually."
+            echo "Download from: https://www.mono-project.com/download/stable/"
+            osascript -e 'display dialog "Mono is required to run this application. Please install Mono from https://www.mono-project.com/download/stable/" with icon stop' 2>/dev/null || echo "Display dialog failed, showing in terminal"
+        fi
+    fi
+    
+    # Recheck if Mono is now available
+    export PATH="/usr/local/bin:/opt/homebrew/bin:/Library/Frameworks/Mono.framework/Versions/Current/bin:$PATH"
+    if ! command -v mono &> /dev/null; then
+        echo "Mono installation failed or requires a terminal restart."
+        echo "Please restart your terminal and try running the application again."
         exit 1
     fi
 fi
@@ -700,7 +783,7 @@ cat > "$APP_DIR/run.sh" << 'EOF'
 cd "$(dirname "$0")"
 
 # Ensure PATH includes common locations for Mono
-export PATH="/usr/local/bin:/opt/homebrew/bin:/usr/local/share/mono/bin:/opt/homebrew/share/mono/bin:$PATH"
+export PATH="/usr/local/bin:/opt/homebrew/bin:/Library/Frameworks/Mono.framework/Versions/Current/bin:$PATH"
 
 # Source shell profiles if they exist to get environment variables
 if [ -f ~/.bash_profile ]; then
@@ -712,20 +795,31 @@ fi
 # Check if Mono is installed
 if ! command -v mono &> /dev/null; then
     echo "Error: Mono is required to run this application."
-    echo "Attempting to install Mono..."
     
-    # Try to install Mono
-    if command -v brew &> /dev/null; then
-        brew install mono
-        if command -v mono &> /dev/null; then
-            echo "Mono successfully installed."
+    # Check if we can install Mono via package installer
+    if [ -f "mdk-latest.pkg" ]; then
+        echo "Installing Mono from downloaded package..."
+        sudo installer -pkg mdk-latest.pkg -target /
+        rm mdk-latest.pkg
+    else
+        echo "Attempting to download and install Mono..."
+        # Try to download and install Mono directly
+        curl -O https://download.mono-project.com/archive/mdk-latest.pkg
+        if [ -f "mdk-latest.pkg" ]; then
+            sudo installer -pkg mdk-latest.pkg -target /
+            rm mdk-latest.pkg
         else
-            echo "Failed to install Mono automatically."
-            echo "Please install Mono manually from https://www.mono-project.com/"
+            echo "Could not download Mono installer. Please install manually."
+            echo "Download from: https://www.mono-project.com/download/stable/"
             exit 1
         fi
-    else
-        echo "Homebrew not found. Please install Homebrew first, then Mono from https://www.mono-project.com/"
+    fi
+    
+    # Recheck if Mono is now available
+    export PATH="/usr/local/bin:/opt/homebrew/bin:/Library/Frameworks/Mono.framework/Versions/Current/bin:$PATH"
+    if ! command -v mono &> /dev/null; then
+        echo "Mono installation failed or requires a terminal restart."
+        echo "Please restart your terminal and try running the application again."
         exit 1
     fi
 fi
